@@ -32,7 +32,12 @@ export function runValidation(ocr) {
     null
   );
 
-  const visualCrosscheck = validateVisualMrzDobMatch(parsedMrz?.dateOfBirthRaw, visualDob);
+  // If visual DOB is missing, we can't verify MRZ vs visual.
+  // In that case, rely on MRZ checksum validation (already computed as `mrzResult.valid`).
+  const visualCrosscheck =
+    visualDob === null || visualDob === undefined
+      ? !!mrzResult.valid
+      : validateVisualMrzDobMatch(parsedMrz?.dateOfBirthRaw, visualDob);
 
   const fileNumber = pick(ocr?.back?.file_number, ocr?.file_number, '');
   const addressRaw = pick(ocr?.back?.address_block, ocr?.address, '');

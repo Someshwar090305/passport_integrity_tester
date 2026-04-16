@@ -113,10 +113,6 @@ export function parseAddressBlock(addressText = '') {
     if (fallback) city = fallback[1].trim();
   }
 
-  // Strong deterministic fallback for common OCR text patterns.
-  if (!city && /\bCHENNAI\b/i.test(normalized)) city = 'CHENNAI';
-  if (!state && /\bTAMIL\s+NADU\b/i.test(normalized)) state = 'TAMIL NADU';
-
   return {
     pin_code: pinCode,
     city: city ? city.toUpperCase() : null,

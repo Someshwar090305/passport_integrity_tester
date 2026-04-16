@@ -59,7 +59,13 @@ const worker = new Worker(
       await dispatch(job.data.callbackUrl, payload);
       return payload;
     } catch (error) {
-      if (error.response && error.response.status < 500) {
+      const status = error.response?.status;
+      // Webhook providers commonly rate-limit with 429. Treat it as retryable
+      // so BullMQ can apply its configured exponential backoff attempts.
+      if (status === 429) {
+        throw error;
+      }
+      if (status && status < 500) {
         throw new UnrecoverableError(`Webhook rejected request: ${error.message}`);
       }
       throw error;

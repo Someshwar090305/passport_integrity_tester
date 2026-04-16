@@ -88,8 +88,6 @@ SARVAM_STATUS_URL_TEMPLATE=https://api.sarvam.ai/doc-digitization/job/v1/{job_id
 SARVAM_DOWNLOAD_URL_TEMPLATE=https://api.sarvam.ai/doc-digitization/job/v1/{job_id}/download-files
 SARVAM_RESULT_POLL_ATTEMPTS=12
 SARVAM_RESULT_POLL_INTERVAL_MS=1500
-SARVAM_SAVE_DOWNLOADS=false
-SARVAM_DOWNLOAD_DIR=./artifacts/sarvam
 SARVAM_API_KEY=replace-with-sarvam-key
 ```
 
@@ -214,7 +212,6 @@ For each queued job:
 Notes:
 
 - This implementation uploads **one ZIP containing front + back images** because Sarvam upload flow expects one file per job.
-- If `SARVAM_SAVE_DOWNLOADS=true`, raw Sarvam download payloads are persisted under `SARVAM_DOWNLOAD_DIR/<job_id>/download-response.json`.
 
 ## Security Notes
 
@@ -273,7 +270,6 @@ Cause: extracted output may be inside downloaded ZIP files, not directly in top-
 Fix:
 
 - Ensure download step and ZIP extraction are enabled (already in `sarvamClient.js`).
-- Optionally set `SARVAM_SAVE_DOWNLOADS=true` and inspect saved artifacts.
 
 ### API usage appears zero in dashboard
 

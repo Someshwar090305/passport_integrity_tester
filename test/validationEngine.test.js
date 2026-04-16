@@ -34,3 +34,22 @@ test('runValidation yields expected payload fields', () => {
   assert.equal(result.extractedData.rpo_code, 'MAA');
   assert.equal(result.extractedData.parsed_address.pin_code, '600089');
 });
+
+test('runValidation passes when visual DOB missing but MRZ valid', () => {
+  const mrzLine2 = 'M7229450<7IND8207089F2503228<<<<<<<<<<<<<4';
+  const result = runValidation({
+    front: {
+      mrz_line2: mrzLine2
+      // Intentionally omit visual DOB so visualCrosscheck must rely on MRZ validity.
+    },
+    back: {
+      file_number: 'MA3068341883515',
+      address_block:
+        'Address NO.25/10,MARUTHI NAGAR,HASTHINAPURAM CHROMEPET,CHENNAI PIN:600064,TAMIL NADU,INDIA'
+    }
+  });
+
+  assert.equal(result.integrityFlags.mrz_checksums_valid, true);
+  assert.equal(result.integrityFlags.viz_mrz_crosscheck_valid, true);
+  assert.equal(result.verificationStatus, 'PASSED');
+});

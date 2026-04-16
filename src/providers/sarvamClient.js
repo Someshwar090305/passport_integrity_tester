@@ -1,7 +1,6 @@
 import axios from 'axios';
 import JSZip from 'jszip';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { validateMrzChecksums } from '../validators/mrzChecksum.js';
 
 function pick(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '');
@@ -98,7 +97,7 @@ function extractHtmlPassportFields(raw) {
   const mrzMatch =
     text.match(/[A-Z0-9<]{40,}<<[A-Z0-9<]{5,}/) ||
     text.match(/[A-Z0-9<]{44}/);
-  const mrzLine2Match = text.match(/[A-Z0-9][A-Z0-9<]{8}[0-9<]IND[0-9<]{6}[MF<][0-9<]{7,}/);
+  const mrzLine2Match = text.match(/[A-Z0-9][A-Z0-9<]{8}[0-9<][A-Z]{3}[0-9<]{6}[MF<][0-9<]{7,}/);
   const passportNumberMatch =
     text.match(/\bPassport\s*No\.?\s*([A-Z0-9]{7,9})\b/i) ||
     text.match(/\b([A-Z][0-9]{7})\b/);
@@ -117,13 +116,21 @@ function extractHtmlPassportFields(raw) {
   // Capture a reasonably sized address segment around known anchor words.
   const addressAnchor =
     text.match(/\bAddress\b[\s\S]{0,220}\b(?:INDIA|\d{6})\b/i) ||
-    text.match(/\bANNA\s+NAGAR[\s\S]{0,160}\b(?:INDIA|\d{6})\b/i);
+    text.match(/\b\d{6}\b[\s\S]{0,80}\b(?:INDIA|[A-Z]{5,})\b/i);
 
+  // MRZ line 1 is usually 44 chars; MRZ line 2 can be truncated by OCR
+  // (observed length ~42 in artifacts). Prefer the candidate that passes
+  // checksum validation rather than defaulting to the first MRZ-like string.
+  const mrzCandidates = text.match(/[A-Z0-9<]{40,45}/g) || [];
   const derivedMrzLine2 = mrzLine2Match?.[0] || null;
   const derivedMrz = mrzMatch?.[0] || null;
-  const mrzLine2 = [derivedMrzLine2, derivedMrz].find(
-    (line) => typeof line === 'string' && line.length >= 28
-  ) || null;
+
+  const candidates = [...mrzCandidates, derivedMrzLine2, derivedMrz].filter(
+    (line) => typeof line === 'string' && line.trim() !== ''
+  );
+
+  const validMrzLine2 = candidates.find((line) => validateMrzChecksums(line).valid);
+  const mrzLine2 = validMrzLine2 || mrzCandidates[1] || derivedMrzLine2 || derivedMrz || null;
 
   return {
     mrz_line2: mrzLine2,
@@ -337,18 +344,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function saveDownloadArtifact(jobId, payload) {
-  const shouldSave = String(process.env.SARVAM_SAVE_DOWNLOADS || '').toLowerCase() === 'true';
-  if (!shouldSave) return;
 
-  const baseDir = process.env.SARVAM_DOWNLOAD_DIR || './artifacts/sarvam';
-  const dir = path.resolve(baseDir, String(jobId));
-  await mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, 'download-response.json');
-  await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
-  // eslint-disable-next-line no-console
-  console.log(`[sarvam] saved download artifact: ${filePath}`);
-}
 
 async function fetchAndExtractZipContents(downloadData) {
   const downloadUrl = pick(
@@ -543,8 +539,6 @@ async function runSingleFileJob({
   if (extractedOutputFiles && extractedOutputFiles.length > 0) {
     downloadData.extracted_output_files = extractedOutputFiles;
   }
-
-  await saveDownloadArtifact(sarvamJobId, downloadData);
 
   return normalizeSarvamResponse(downloadData);
 }

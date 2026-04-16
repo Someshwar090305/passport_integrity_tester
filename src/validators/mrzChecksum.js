@@ -15,7 +15,11 @@ function computeChecksum(segment) {
 
 export function validateMrzChecksums(mrzLine2 = '') {
   const normalized = String(mrzLine2).toUpperCase().trim();
-  if (normalized.length < 44) {
+  // Some OCR outputs truncate MRZ line 2 (e.g. missing trailing filler chars),
+  // but we can still validate passport/DOB/expiry checksums as long as
+  // indexes required by those fields exist.
+  const MIN_MRZ_LINE2_LENGTH = 28; // up to expiry check digit at index 27
+  if (normalized.length < MIN_MRZ_LINE2_LENGTH) {
     return {
       valid: false,
       details: {
@@ -49,7 +53,8 @@ export function validateMrzChecksums(mrzLine2 = '') {
 
 export function parseMrzLine2(mrzLine2 = '') {
   const normalized = String(mrzLine2).toUpperCase().trim();
-  if (normalized.length < 44) {
+  const MIN_MRZ_LINE2_LENGTH = 28; // up to expiry check digit at index 27
+  if (normalized.length < MIN_MRZ_LINE2_LENGTH) {
     return null;
   }
 
