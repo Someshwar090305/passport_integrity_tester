@@ -65,7 +65,7 @@ test/
 - Sarvam API key and working Doc Digitization endpoints
 
 ## Installation
-hi hi 
+ yo yo 
 ```bash
 npm install
 ```
