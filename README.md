@@ -157,6 +157,28 @@ curl -X POST http://localhost:3000/api/v1/jobs/verify-passport \
 }
 ```
 
+### `POST /api/v1/jobs/verify-passport-sync`
+
+Same image inputs, but instead of requiring a `callback_url`, this endpoint returns the final verification payload directly in the HTTP response (useful for testing via Postman).
+
+Accepts multipart form data:
+
+- `front_image` (required, `image/jpeg` or `image/png`, max 8MB)
+- `back_image` (required, `image/jpeg` or `image/png`, max 8MB)
+
+#### Example 200 Response
+
+Returns the same JSON payload shape that the worker would normally POST to `callback_url`:
+
+- `job_id`
+- `processing_metrics`
+- `verification_status`
+- `integrity_flags`
+- `extracted_data`
+- `extracted_features`
+
+Note: this endpoint waits for Sarvam OCR + validation to complete, so the request may take longer than the async `202` endpoint.
+
 ## Webhook Contract
 
 Worker sends JSON payload to the provided `callback_url`:
