@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "passport-validation-498409",
+  "private_key_id": "650796f02eeb029f35c25a3563fad209d4580b1f",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDCYw/npJCRd5zz\n6N8JAM3DlN7gpg3xS8J3GT9ZxTM/U5IHwRUKmKIbj3j/RRR4MfCeGhQ7cYHDD5cZ\nvuHz1a9r4LNrgTSXGqT2cxWbOHkTfLn8CEvdWQPPHB9shvd/WLrrU3VYKNMZTFVa\nApfLAoYM2jFBXSFdkF3XcHgrOd0eNYKzapQOn4HpCoUAIybaUf+rmK/gF1YnFHNc\ndAoiYtC1FAQfUkEyF53ZT2ZYFi755Skzl5I/l6cqk9s38tG5wADb0Cb3zYqgKNuX\nen9SeH0w/nNU/nEwfyjIZD+uEqNzYmp2bOks3DNTb8JrY4eHPmcpb/6YxNdWb7Qr\nZEndwkAZAgMBAAECggEAEWLOFj41KneX74ZbZXkfjj/LT+02N8fagq+8x20QfHhf\naidiOAaHED88t5swfaAc2O009EyeiiljrrswhzAsbpIERigiIaYxzTOlofKS/LPW\nCCVfULLAmRZ3NowbSJXxcPEP4KTVHbECvMhY1oDZJ77fsyyO2okaJZXi/52/Kc+A\nQWTbE7/4JMOk6OD61KiIu3J9vfK0r2stT+Ioq3nuLEdBEe4AKbeUvK0mgJFroFkU\nLp9v1zohPN5XveM4DhS6MvCVyq1zvcCysVQpvZhqVEFyKg1W2IGbuRdjwC8KLOcb\nnVB0lucwu72htftus3pxOBbgkQ3gatyCGoAIG7rjsQKBgQDj5j+k/1QuNh+vx5C8\nJ80v2mcYRKaG74PRlJ7BoDuBjB9wm2xnVy6sG/etxfcrX4DaWedbocA7rQPYy5gS\niBUIQVXzizod41ODjZK89ui0l9FKmYuOrmo0FHHEwx+1SpZvfSyte2uD6rx0kPQO\nOqPsvPzamoAY86z4UWJjOdz6MQKBgQDaWvo6T4q/ADweaXbYDP1eEFjq8fHOLgig\nd73v7SfapTHFHYMiDhAxWElDOGx+dmETJ9wCSb+prqM3OGwnRa4U4WQvQLHed2fL\nuABP0/VUJTXPXrwBO+fGsG/75mOC6kgYaco/NEIxnskWrV/FQIV2Y0u+0fgkE1T/\nzAEInM9CaQKBgQCYWHi/MbfyVFgGR5/nR6wQiy1TucCgf0hdN76QrS5aQXNa8Wsc\nAdm/T8rYLXg3VFZsoKDaTlyVB+mEaUU1TibRJ+vvLGkjRa20SVWIYH3bC4nrFo2G\nSe3Q9sG+yLlPlZbO3JybM+ABhU+JlMSxJl4iiYt2DsYG6A3+yVi+ABZKYQKBgGxS\ntdA3pZ0bgLeVml+UEh2X/oSPgmXGcIEq5g8gl6TgTtB605MRZvcT1USDuU8DayUV\noQ+BhpOnD1FVrFHPP40cQ5ctgQ/cLKHjpkPz4sDbtNYrKRlznofy/5r3sGZB04JI\n+Qxh4HS9UQTu/ZPdblhM6ka/41oCPSipC9o58JgBAoGAQrpUc3dsINq39zyWfbTo\nhHlwl0c0EI5nq6lTQjQdzq3kYapenehQVQksnuzcCqPVwzoBbo7bbj4vN1Dtyf7f\nuLXzkSyHId5G1Ys+f4Uy7qc/dXz/sawPShlSKwBTqzhruvQDO49o4sQustR6lkWv\nCk3T6Ex8MzeQWyIHg4yWmjY=\n-----END PRIVATE KEY-----\n",
+  "client_email": "ocr-test@passport-validation-498409.iam.gserviceaccount.com",
+  "client_id": "101083402269945084165",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/ocr-test%40passport-validation-498409.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
