@@ -80,7 +80,7 @@ export function parseAddressBlock(addressText = '') {
   // Strong pattern for OCR strings like:
   // "... ANNA NAGAR, CHENNAI PIN 600040, TAMIL NADU, INDIA"
   const pinAnchored = normalized.match(
-    /,\s*([A-Za-z .'-]+?)\s+PIN\s+\d{6}\s*,\s*([A-Za-z .'-]+?)\s*(?:,|$)/i
+    /,\s*([A-Za-z .'-]+?)\s*,?\s*PIN\s+\d{6}\s*,\s*([A-Za-z .'-]+?)\s*(?:,|$)/i
   );
   if (pinAnchored) {
     return {

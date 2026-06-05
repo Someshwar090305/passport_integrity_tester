@@ -1,17 +1,7 @@
 import 'dotenv/config';
 import app from './api/app.js';
 
-const REQUIRED_ENV = [
-  'SARVAM_API_URL',
-  'SARVAM_API_KEY',
-  'SARVAM_CREATE_JOB_URL',
-  'SARVAM_START_JOB_URL_TEMPLATE',
-  'SARVAM_STATUS_URL_TEMPLATE',
-  'SARVAM_DOWNLOAD_URL_TEMPLATE',
-  'WEBHOOK_SECRET',
-  'REDIS_URL'
-];
-
+const REQUIRED_ENV = ['WEBHOOK_SECRET', 'REDIS_URL', 'GOOGLE_APPLICATION_CREDENTIALS'];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missing.length > 0) {
   // eslint-disable-next-line no-console

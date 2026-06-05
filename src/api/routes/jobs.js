@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { ulid } from 'ulid';
 import { passportQueue } from '../../queue/passportQueue.js';
-import { extractPassportData } from '../../providers/sarvamClient.js';
+import { extractPassportData } from '../../providers/ocrClient.js';
 import { runValidation } from '../../services/validationEngine.js';
 
 // SSRF guard: reject callback URLs pointing at private/loopback/link-local ranges

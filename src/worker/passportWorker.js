@@ -2,21 +2,11 @@ import 'dotenv/config';
 import { Worker, UnrecoverableError } from 'bullmq';
 import { connection } from '../queue/connection.js';
 import { PASSPORT_QUEUE_NAME } from '../queue/constants.js';
-import { extractPassportData } from '../providers/sarvamClient.js';
+import { extractPassportData } from '../providers/ocrClient.js';
 import { runValidation } from '../services/validationEngine.js';
 import { dispatch } from '../webhook/dispatcher.js';
 
-const REQUIRED_ENV = [
-  'SARVAM_API_URL',
-  'SARVAM_API_KEY',
-  'SARVAM_CREATE_JOB_URL',
-  'SARVAM_START_JOB_URL_TEMPLATE',
-  'SARVAM_STATUS_URL_TEMPLATE',
-  'SARVAM_DOWNLOAD_URL_TEMPLATE',
-  'WEBHOOK_SECRET',
-  'REDIS_URL'
-];
-
+const REQUIRED_ENV = ['WEBHOOK_SECRET', 'REDIS_URL', 'GOOGLE_APPLICATION_CREDENTIALS'];
 const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missing.length > 0) {
   // eslint-disable-next-line no-console
