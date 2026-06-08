@@ -6,7 +6,6 @@
   "type": "module",
   "scripts": {
     "dev:api": "nodemon src/server.js",
-    "dev:worker": "nodemon src/worker/passportWorker.js",
     "test": "node --test"
   },
   "keywords": [],
@@ -14,11 +13,8 @@
   "license": "ISC",
   "dependencies": {
     "@google-cloud/vision": "^5.3.6",
-    "axios": "^1.15.0",
-    "bullmq": "^5.73.2",
     "dotenv": "^17.4.1",
     "express": "^5.2.1",
-    "ioredis": "^5.10.1",
     "multer": "^2.1.1",
     "ulid": "^3.0.2"
   },
