@@ -58,7 +58,7 @@ Create a `.env` file in the project root with:
 
 ```env
 PORT=3000
-GOOGLE_APPLICATION_CREDENTIALS=C:\Boharr\passport_validator\credentials\passport-validation-498409-650796f02eeb.json
+GOOGLE_APPLICATION_CREDENTIALS=.\credentials\passport-validation-498409-650796f02eeb.json
 ```
 
 ## Running the Service
