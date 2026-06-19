@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { ulid } from 'ulid';
-import { extractPassportData } from '../../providers/ocrClient.js';
-import { runValidation } from '../../services/validationEngine.js';
+import { passportQueue } from '../../queue/passportQueue.js';
 
 const MAX_FILE_SIZE_BYTES = 8 * 1024 * 1024;
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png']);
@@ -39,47 +38,66 @@ router.post(
       }
 
       const jobId = `job_${ulid()}`;
-      const extractionStart = Date.now();
-
-      const ocrResult = await extractPassportData(
+      await passportQueue.add(
+        'verify-passport',
         {
-          mimetype: front.mimetype,
-          originalname: front.originalname,
-          dataBase64: front.buffer.toString('base64')
+          jobId,
+          front: {
+            mimetype: front.mimetype,
+            originalname: front.originalname,
+            dataBase64: front.buffer.toString('base64')
+          },
+          back: {
+            mimetype: back.mimetype,
+            originalname: back.originalname,
+            dataBase64: back.buffer.toString('base64')
+          }
         },
-        {
-          mimetype: back.mimetype,
-          originalname: back.originalname,
-          dataBase64: back.buffer.toString('base64')
-        }
+        { jobId }
       );
 
-      const sdkExtractionMs = Date.now() - extractionStart;
-
-      const validationStart = Date.now();
-      const validation = runValidation(ocrResult);
-      const internalValidationMs = Date.now() - validationStart;
-
-      const payload = {
+      return res.status(202).json({
         job_id: jobId,
-        processing_metrics: {
-          queue_wait_ms: 0,
-          sdk_extraction_ms: sdkExtractionMs,
-          internal_validation_ms: internalValidationMs
-        },
-        verification_status: validation.verificationStatus,
-        integrity_flags: validation.integrityFlags,
-        extracted_data: validation.extractedData,
-        extracted_features: validation.extractedFeatures,
-        google_ocr_raw: ocrResult.raw
-      };
-
-      return res.status(200).json(payload);
+        status: 'queued',
+        message: 'Verification job accepted for background processing'
+      });
     } catch (error) {
       return next(error);
     }
   }
 );
+
+router.get('/:jobId', async (req, res) => {
+  const job = await passportQueue.getJob(req.params.jobId);
+
+  if (!job) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Job not found'
+    });
+  }
+
+  const state = await job.getState();
+  const jobResult = await job.returnvalue;
+
+  if (state === 'completed') {
+    return res.status(200).json(jobResult);
+  }
+
+  if (state === 'failed') {
+    return res.status(500).json({
+      job_id: req.params.jobId,
+      status: 'failed',
+      message: jobResult?.message || 'Job failed'
+    });
+  }
+
+  return res.status(202).json({
+    job_id: req.params.jobId,
+    status: state,
+    message: 'Job is still processing'
+  });
+});
 
 router.use((error, _req, res, next) => {
   if (!(error instanceof multer.MulterError) && !error.message) {
