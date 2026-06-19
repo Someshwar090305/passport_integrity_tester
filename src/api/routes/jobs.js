@@ -70,7 +70,8 @@ router.post(
         verification_status: validation.verificationStatus,
         integrity_flags: validation.integrityFlags,
         extracted_data: validation.extractedData,
-        extracted_features: validation.extractedFeatures
+        extracted_features: validation.extractedFeatures,
+        google_ocr_raw: ocrResult.raw
       };
 
       return res.status(200).json(payload);

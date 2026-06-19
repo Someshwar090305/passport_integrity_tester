@@ -182,17 +182,25 @@ async function detectTextFromImage(imageEncoded) {
       content: buffer.toString('base64')
     }
   });
-  return result.fullTextAnnotation?.text || '';
+
+  const text = result.fullTextAnnotation?.text || '';
+
+  return {
+    text,
+    raw: {
+      text
+    }
+  };
 }
 
 export async function extractPassportData(frontImageEncoded, backImageEncoded) {
-  const [frontText, backText] = await Promise.all([
+  const [frontResponse, backResponse] = await Promise.all([
     detectTextFromImage(frontImageEncoded),
     detectTextFromImage(backImageEncoded)
   ]);
 
-  const frontResult = normalizeGoogleVisionText(frontText);
-  const backResult = normalizeGoogleVisionText(backText);
+  const frontResult = normalizeGoogleVisionText(frontResponse.text);
+  const backResult = normalizeGoogleVisionText(backResponse.text);
 
   return {
     front: {
@@ -207,11 +215,11 @@ export async function extractPassportData(frontImageEncoded, backImageEncoded) {
     file_number: pick(frontResult.file_number, backResult.file_number),
     address: pick(frontResult.address, backResult.address),
     raw: {
-  front: frontResult.raw,
-  back: backResult.raw,
-  frontText: frontText,
-  backText: backText
-}
+      google_vision: {
+        front: frontResponse.raw.text,
+        back: backResponse.raw.text
+      }
+    }
   };
 }
 
