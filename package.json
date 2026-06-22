@@ -7,6 +7,7 @@
   "scripts": {
     "dev:api": "nodemon src/server.js",
     "dev:worker": "nodemon src/worker/passportWorker.js",
+    "samples:run": "node scripts/run-sample-cases.js",
     "test": "node --test"
   },
   "keywords": [],

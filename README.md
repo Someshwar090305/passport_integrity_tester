@@ -132,6 +132,28 @@ curl -X POST http://localhost:3000/api/v1/jobs/verify-passport \
 
 If your sample image names differ, replace the paths with the actual files you want to test.
 
+### Batch run all sample cases
+
+You can also run every sample folder automatically without uploading them one by one in Postman.
+
+For the most reliable results, rename each pair inside a sample folder to:
+
+- `front.jpg` / `front.png`
+- `back.jpg` / `back.png`
+
+If the files are already named exactly like that, the script will use them directly.
+
+```bash
+npm run samples:run -- --base-url http://localhost:3000
+```
+
+Optional flags:
+
+- `--poll-interval-ms 2000` to control how often the script checks job status
+- `--timeout-ms 600000` to stop waiting after 10 minutes per case
+
+This script scans [samples](samples) and submits each folder's front/back image pair to the API, then prints the result for each case.
+
 #### Example accepted response
 
 ```json
