@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runValidation } from '../src/services/validationEngine.js';
+import { runValidation, selectValidationResult } from '../src/services/validationEngine.js';
 
 test('runValidation yields expected payload fields', () => {
   const result = runValidation({
@@ -31,11 +31,18 @@ test('runValidation passes when visual DOB missing but MRZ valid', () => {
     back: {
       file_number: 'MA3068341883515',
       address_block:
-        'Address NO.25/10,MARUTHI NAGAR,HASTHINAPURAM CHROMEPET,CHENNAI PIN:600064,TAMIL NADU,INDIA'
+        'Address NO.25/10,MARUTHI NAGAR,HASTHINAPURAM CHROMEPURAM CHROMEPET,CHENNAI PIN:600064,TAMIL NADU,INDIA'
     }
   });
 
   assert.equal(result.integrityFlags.mrz_checksums_valid, true);
   assert.equal(result.integrityFlags.viz_mrz_crosscheck_valid, true);
   assert.equal(result.verificationStatus, 'PASSED');
+});
+
+test('selectValidationResult prefers the fallback validation result when present', () => {
+  const primary = { verificationStatus: 'FAILED' };
+  const fallback = { verificationStatus: 'PASSED' };
+
+  assert.equal(selectValidationResult(primary, fallback).verificationStatus, 'PASSED');
 });

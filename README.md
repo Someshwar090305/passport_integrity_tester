@@ -1,15 +1,27 @@
 # Passport Validator
 
-Node.js microservice that accepts passport images, runs OCR through Google Cloud Vision, performs integrity checks, and returns results asynchronously through a Redis-backed job queue.
+A Node.js service for validating passport images by combining OCR, deterministic validation rules, and an optional LLM-based fallback. The API accepts front/back passport images, queues verification jobs, and returns structured results asynchronously through a Redis-backed job queue.
 
-## What This Service Does
+## Current Status
+
+The service now supports:
+
+- OCR-based passport extraction using Google Cloud Vision
+- Deterministic validation for MRZ checksums, visual vs MRZ DOB matching, and RPO/address mapping
+- An optional Groq-backed LLM fallback that runs when the first-pass validation looks weak or incomplete
+- Structured normalization of LLM output into the same shape used by the existing validation engine
+- Batch execution of sample passport cases through a sample-runner script
+- Rich job responses that include a fallback trace showing the first-pass result, the LLM action, and the second-pass validation result
+
+## What the Service Does
 
 - Accepts `front_image` and `back_image` via `POST /api/v1/jobs/verify-passport`
 - Queues the request for asynchronous processing using BullMQ
-- Runs OCR using Google Cloud Vision in a background worker
-- Parses MRZ, passport number, date of birth, expiry, file number, and address
+- Runs OCR in a background worker
+- Extracts passport number, DOB, expiry date, file number, address, and MRZ details
 - Validates MRZ checksums, visual vs MRZ DOB, and RPO/address mapping
-- Returns `202 Accepted` immediately with a `job_id` for polling
+- Optionally uses an LLM fallback when the deterministic engine needs help with noisy or incomplete OCR data
+- Returns a `202 Accepted` response immediately with a `job_id` for polling
 
 ## Tech Stack
 
@@ -34,6 +46,7 @@ src/
     passportQueue.js
   services/
     validationEngine.js
+    llmFallback.js
   validators/
     mrzChecksum.js
     visualCrosscheck.js
@@ -41,14 +54,18 @@ src/
   worker/
     passportWorker.js
   server.js
+scripts/
+  run-sample-cases.js
 test/
-  validators.test.js
+  googleVisionClient.test.js
   validationEngine.test.js
+  validators.test.js
+  llmFallback.test.js
 ```
 
 ## Prerequisites
 
-- Node.js 18+ (recommended: latest LTS)
+- Node.js 18+
 - Redis server running locally or remotely
 - Google service account JSON credentials
 - `GOOGLE_APPLICATION_CREDENTIALS` pointing to the credentials file
@@ -61,17 +78,21 @@ npm install
 
 ## Environment Variables
 
-Create a `.env` file in the project root with:
+Create a `.env` file in the project root. A sample is also available in [.env.example](.env.example).
 
 ```env
 PORT=3000
 REDIS_URL=redis://127.0.0.1:6379
-GOOGLE_APPLICATION_CREDENTIALS=.\credentials\passport-validation-498409-650796f02eeb.json
+GOOGLE_APPLICATION_CREDENTIALS=./credentials/passport-validation-498409-650796f02eeb.json
+
+# Optional: enable Groq-based LLM fallback
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 ## Running the Service
 
-You need both the API and the worker running, plus Redis.
+You need the API, the worker, and Redis running.
 
 ### 1) Start Redis
 
@@ -94,12 +115,6 @@ npm run dev:worker
 ```
 
 ### 4) Health check
-
-```bash
-curl http://localhost:3000/healthz
-```
-
-Expected response:
 
 ```bash
 curl http://localhost:3000/healthz
@@ -130,40 +145,6 @@ curl -X POST http://localhost:3000/api/v1/jobs/verify-passport \
   -F "back_image=@./samples/Demo passport 1/back.jpg"
 ```
 
-If your sample image names differ, replace the paths with the actual files you want to test.
-
-### Batch run all sample cases
-
-You can also run every sample folder automatically without uploading them one by one in Postman.
-
-For the most reliable results, rename each pair inside a sample folder to:
-
-- `front.jpg` / `front.png`
-- `back.jpg` / `back.png`
-
-If the files are already named exactly like that, the script will use them directly.
-
-```bash
-npm run samples:run -- --base-url http://localhost:3000
-```
-
-Optional flags:
-
-- `--poll-interval-ms 2000` to control how often the script checks job status
-- `--timeout-ms 600000` to stop waiting after 10 minutes per case
-
-This script scans [samples](samples) and submits each folder's front/back image pair to the API, then prints the result for each case.
-
-#### Example accepted response
-
-```json
-{
-  "job_id": "job_01ABCDEF...",
-  "status": "queued",
-  "message": "Verification job accepted for background processing"
-}
-```
-
 ### `GET /api/v1/jobs/:jobId`
 
 Poll this endpoint until the job is complete.
@@ -171,18 +152,6 @@ Poll this endpoint until the job is complete.
 - `202 Accepted` if the job is still running or queued
 - `200 OK` when the verification result is ready
 - `500` if the job fails during processing
-
-Use the exact `job_id` returned from the POST response. Do not include braces or extra spaces in the URL.
-
-#### Example polling response while processing
-
-```json
-{
-  "job_id": "job_01ABCDEF...",
-  "status": "running",
-  "message": "Job is still processing"
-}
-```
 
 #### Example completed response
 
@@ -231,10 +200,69 @@ Use the exact `job_id` returned from the POST response. Do not include braces or
     },
     "inferred": {
       "rpo_code": "XYZ"
+    },
+    "llm_fallback": {
+      "used": true,
+      "model": "llama-3.3-70b-versatile"
+    }
+  },
+  "fallback_trace": {
+    "triggered": true,
+    "reason": "initial validation was weak",
+    "first_pass": {
+      "verification_status": "FAILED",
+      "integrity_flags": {
+        "mrz_checksums_valid": false,
+        "viz_mrz_crosscheck_valid": false,
+        "rpo_address_mapping_valid": true
+      }
+    },
+    "llm_action": {
+      "status": "success",
+      "model": "llama-3.3-70b-versatile",
+      "fields_updated": {
+        "passport_number": {
+          "before": "OLD123",
+          "after": "NEW123",
+          "changed": true
+        }
+      }
+    },
+    "second_pass": {
+      "verification_status": "PASSED",
+      "integrity_flags": {
+        "mrz_checksums_valid": true,
+        "viz_mrz_crosscheck_valid": true,
+        "rpo_address_mapping_valid": true
+      }
     }
   }
 }
 ```
+
+## Batch Sample Runner
+
+You can run every sample folder automatically without uploading them one by one in Postman.
+
+For the most reliable results, place each image pair in a sample directory using either:
+
+- `front.jpg` / `back.jpg`
+- `front.png` / `back.png`
+
+If the files are already named that way, the script will use them directly.
+
+```bash
+npm run samples:run -- --base-url http://localhost:3000
+```
+
+Optional flags:
+
+- `--poll-interval-ms 2000` to control how often the script checks job status
+- `--timeout-ms 600000` to stop waiting after 10 minutes per case
+
+## Optional LLM Fallback
+
+If `GROQ_API_KEY` is set, the worker will use the deterministic engine first and only call the LLM fallback when the engine output looks weak or incomplete. The LLM output is normalized into the same shape expected by the validator so it can be re-run through the same validation pipeline.
 
 ## Manual Testing Flow
 
@@ -245,12 +273,6 @@ Use the exact `job_id` returned from the POST response. Do not include braces or
 5. Copy the returned `job_id`.
 6. Poll `GET /api/v1/jobs/<job_id>` until you receive a `200` response.
 
-Example polling command:
-
-```bash
-curl http://localhost:3000/api/v1/jobs/job_01ABCDEF...
-```
-
 ## Tests
 
 Run:
@@ -259,9 +281,10 @@ Run:
 npm test
 ```
 
-Covers:
+Current coverage includes:
 
 - MRZ checksum validation
-- visual/MRZ DOB matching
+- visual vs MRZ DOB matching
 - RPO extraction and mapping
-- validation engine output structure
+- engine output structure
+- LLM fallback normalization and trace generation

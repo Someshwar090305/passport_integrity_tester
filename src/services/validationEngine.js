@@ -20,6 +20,10 @@ function pick(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '');
 }
 
+export function selectValidationResult(primaryValidation, fallbackValidation) {
+  return fallbackValidation || primaryValidation;
+}
+
 export function runValidation(ocr) {
   const mrzLine2 = pick(ocr?.mrz?.line2, ocr?.front?.mrz_line2, ocr?.mrz_line2, '');
   const parsedMrz = parseMrzLine2(mrzLine2);
