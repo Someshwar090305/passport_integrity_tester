@@ -56,6 +56,7 @@ const worker = new Worker(
             address: llmStructured.back.address_block || ocrResult.address,
             front: {
               ...(ocrResult.front || {}),
+              mrz_line1: llmStructured.mrz.line1 || ocrResult.front?.mrz_line1,
               mrz_line2: llmStructured.mrz.line2 || ocrResult.front?.mrz_line2,
               date_of_birth: llmStructured.front.date_of_birth || ocrResult.front?.date_of_birth,
               passport_number: llmStructured.front.passport_number || ocrResult.front?.passport_number,
@@ -125,6 +126,10 @@ const worker = new Worker(
       },
       verification_status: effectiveValidation.verificationStatus,
       integrity_flags: effectiveValidation.integrityFlags,
+      integrity_score: effectiveValidation.integrityScore,
+      integrity_tier: effectiveValidation.integrityTier,
+      review_required: effectiveValidation.reviewRequired,
+      failed_checks: effectiveValidation.failedChecks,
       extracted_data: mergedExtractedData,
       extracted_features: {
         ...effectiveValidation.extractedFeatures,

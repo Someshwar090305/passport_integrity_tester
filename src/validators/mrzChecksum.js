@@ -7,10 +7,55 @@ function charValue(char) {
   return 0;
 }
 
-function computeChecksum(segment) {
+export function computeChecksum(segment) {
   return segment
     .split('')
     .reduce((acc, char, idx) => acc + charValue(char) * WEIGHTS[idx % WEIGHTS.length], 0) % 10;
+}
+
+function cleanMrzLine(raw) {
+  return String(raw || '').replace(/[^A-Z0-9<]/gi, '').toUpperCase().trim();
+}
+
+export function parseMrzLine1(mrzLine1 = '') {
+  const normalized = cleanMrzLine(mrzLine1);
+  if (!normalized.startsWith('P<') || normalized.length < 39) {
+    return null;
+  }
+
+  const padded = normalized.padEnd(44, '<').slice(0, 44);
+  const issuingCountry = padded.slice(2, 5);
+  const namesPart = padded.slice(5, 44);
+  const nameParts = namesPart.split('<<');
+  const surname = (nameParts[0] || '').replace(/</g, ' ').trim();
+  const givenNames = (nameParts[1] || '').replace(/</g, ' ').trim();
+
+  return {
+    documentType: normalized[0],
+    issuingCountry,
+    surname: surname || null,
+    givenNames: givenNames || null
+  };
+}
+
+export function validateMrzCompositeCheck(mrzLine2 = '') {
+  const normalized = cleanMrzLine(mrzLine2);
+  if (normalized.length < 44) {
+    return { valid: false, applicable: false };
+  }
+
+  const compositeSegment =
+    normalized.slice(0, 10) +
+    normalized.slice(13, 20) +
+    normalized.slice(21, 28) +
+    normalized.slice(28, 43);
+  const expected = Number(normalized[43]);
+  const computed = computeChecksum(compositeSegment);
+
+  return {
+    valid: computed === expected,
+    applicable: true
+  };
 }
 
 export function validateMrzChecksums(mrzLine2 = '') {
@@ -60,7 +105,9 @@ export function parseMrzLine2(mrzLine2 = '') {
 
   return {
     passportNumber: normalized.slice(0, 9).replace(/</g, ''),
+    nationality: normalized.slice(10, 13).replace(/</g, '') || null,
     dateOfBirthRaw: normalized.slice(13, 19),
+    sex: normalized[20] || null,
     expiryDateRaw: normalized.slice(21, 27)
   };
 }

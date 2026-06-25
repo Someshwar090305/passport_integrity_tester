@@ -55,6 +55,20 @@ function yyMmDdToIso(value) {
   return `${year}-${mm}-${dd}`;
 }
 
+function extractMrzLine1(text) {
+  if (!text) return null;
+  const lines = String(text)
+    .split(/\r?\n/)
+    .map((line) => cleanMrzLine(line))
+    .filter((line) => line.length >= 10);
+
+  const line1 = lines.find((line) => line.startsWith('P<') && line.length >= 44);
+  if (line1) return line1;
+
+  const match = cleanMrzLine(text).match(/P<[A-Z]{3}[A-Z<]{30,}/);
+  return match?.[0]?.slice(0, 44) || null;
+}
+
 function extractMrzLine2(text) {
   if (!text) return null;
   const lines = String(text)
@@ -142,6 +156,7 @@ function extractVisualDobFromText(text) {
 
 function normalizeGoogleVisionText(rawText) {
   const text = normalizeText(rawText);
+  const mrzLine1 = extractMrzLine1(text);
   const mrzLine2 = extractMrzLine2(text);
   const parsedMrz = parseMrzLine2(mrzLine2 || '');
   const mrzPassportNumber = parsedMrz?.passportNumber || null;
@@ -155,6 +170,7 @@ function normalizeGoogleVisionText(rawText) {
 
   return {
     front: {
+      mrz_line1: mrzLine1,
       mrz_line2: mrzLine2,
       date_of_birth: dob,
       passport_number: passportNumber,
@@ -204,6 +220,7 @@ export async function extractPassportData(frontImageEncoded, backImageEncoded) {
 
   return {
     front: {
+      mrz_line1: frontResult.front.mrz_line1 || null,
       ...frontResult.front
     },
     back: {

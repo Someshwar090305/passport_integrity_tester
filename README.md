@@ -7,7 +7,12 @@ A Node.js service for validating passport images by combining OCR, deterministic
 The service now supports:
 
 - OCR-based passport extraction using Google Cloud Vision
-- Deterministic validation for MRZ checksums, visual vs MRZ DOB matching, and RPO/address mapping
+- Phase 1 integrity pipeline with expanded deterministic checks:
+  - Full MRZ integrity (line 1 parse, composite check, visual cross-matches, country)
+  - Temporal validity (expiry, plausible DOB, expiry after DOB)
+  - Back-page integrity (file number format, PIN format, address structure)
+  - Front/back document consistency
+  - Integrity scoring with `PASSED`, `REVIEW_REQUIRED`, and `FAILED` tiers
 - An optional Groq-backed LLM fallback that runs when the first-pass validation looks weak or incomplete
 - Structured normalization of LLM output into the same shape used by the existing validation engine
 - Batch execution of sample passport cases through a sample-runner script
@@ -46,9 +51,14 @@ src/
     passportQueue.js
   services/
     validationEngine.js
+    integrityScoring.js
     llmFallback.js
   validators/
     mrzChecksum.js
+    mrzIntegrity.js
+    temporalIntegrity.js
+    backPageIntegrity.js
+    documentConsistency.js
     visualCrosscheck.js
     rpoMapping.js
   worker/
@@ -61,6 +71,11 @@ test/
   validationEngine.test.js
   validators.test.js
   llmFallback.test.js
+  mrzIntegrity.test.js
+  temporalIntegrity.test.js
+  backPageIntegrity.test.js
+  documentConsistency.test.js
+  integrityScoring.test.js
 ```
 
 ## Prerequisites
@@ -166,9 +181,26 @@ Poll this endpoint until the job is complete.
   "verification_status": "PASSED",
   "integrity_flags": {
     "mrz_checksums_valid": true,
+    "mrz_composite_check_valid": true,
+    "mrz_line1_parse_valid": true,
+    "mrz_country_valid": true,
+    "mrz_visual_passport_match": true,
+    "mrz_visual_dob_match": true,
+    "mrz_visual_expiry_match": true,
     "viz_mrz_crosscheck_valid": true,
-    "rpo_address_mapping_valid": true
+    "document_not_expired": true,
+    "dob_plausible": true,
+    "expiry_after_dob": true,
+    "file_number_format_valid": true,
+    "pin_code_format_valid": true,
+    "address_structure_valid": true,
+    "rpo_address_mapping_valid": true,
+    "front_back_consistency_valid": true
   },
+  "integrity_score": 100,
+  "integrity_tier": "HIGH",
+  "review_required": false,
+  "failed_checks": [],
   "extracted_data": {
     "passport_number": "A1234567",
     "date_of_birth": "1990-01-01",
@@ -263,6 +295,24 @@ Optional flags:
 ## Optional LLM Fallback
 
 If `GROQ_API_KEY` is set, the worker will use the deterministic engine first and only call the LLM fallback when the engine output looks weak or incomplete. The LLM output is normalized into the same shape expected by the validator so it can be re-run through the same validation pipeline.
+
+## Integrity Layers (Phase 1)
+
+The validation engine now runs a layered integrity pipeline:
+
+1. **MRZ integrity** — checksums, composite check (when full line available), line 1 parse, country/nationality, visual vs MRZ passport/DOB/expiry matches
+2. **Temporal integrity** — passport not expired, plausible DOB, expiry after DOB
+3. **Back-page integrity** — file number format, PIN format, address structure
+4. **Document consistency** — front/back passport number and RPO alignment
+5. **RPO mapping** — file number RPO vs parsed address region
+
+### Verification tiers
+
+- `PASSED` — score >= 85, no critical failures
+- `REVIEW_REQUIRED` — medium issues or missing visual DOB (score 60–84)
+- `FAILED` — critical failures or score < 60
+
+Missing visual DOB no longer auto-passes; it triggers `review_required`.
 
 ## Manual Testing Flow
 
