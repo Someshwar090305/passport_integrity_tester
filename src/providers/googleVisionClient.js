@@ -1,5 +1,6 @@
 import vision from '@google-cloud/vision';
 import { parseMrzLine2, validateMrzChecksums } from '../validators/mrzChecksum.js';
+import { pick, yyMmDdToIso, cleanMrzLine, normalizeDateString } from '../utils/helpers.js';
 
 const credentialPath =
   process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_KEYFILE_JSON;
@@ -14,45 +15,8 @@ function getClient() {
   return client;
 }
 
-function pick(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '');
-}
-
-function normalizeDateString(raw) {
-  if (!raw) return null;
-  const value = String(raw).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-  const embeddedIso = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-  if (embeddedIso) return embeddedIso[1];
-  if (/^\d{2}[-/]\d{2}[-/]\d{4}$/.test(value)) {
-    const [dd, mm, yyyy] = value.split(/[-/]/);
-    return `${yyyy}-${mm}-${dd}`;
-  }
-  const embeddedDmy = value.match(/\b([0-3]?\d)[-/]([01]?\d)[-/](\d{4})\b/);
-  if (embeddedDmy) {
-    const dd = embeddedDmy[1].padStart(2, '0');
-    const mm = embeddedDmy[2].padStart(2, '0');
-    const yyyy = embeddedDmy[3];
-    return `${yyyy}-${mm}-${dd}`;
-  }
-  return null;
-}
-
 function normalizeText(raw) {
   return String(raw || '').replace(/\r/g, '\n').replace(/[\t\u00A0]+/g, ' ').trim();
-}
-
-function cleanMrzLine(raw) {
-  return String(raw || '').replace(/[^A-Z0-9<]/gi, '').toUpperCase().trim();
-}
-
-function yyMmDdToIso(value) {
-  if (!/^[0-9]{6}$/.test(value)) return null;
-  const yy = Number(value.slice(0, 2));
-  const mm = value.slice(2, 4);
-  const dd = value.slice(4, 6);
-  const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-  return `${year}-${mm}-${dd}`;
 }
 
 function extractMrzLine1(text) {
@@ -146,27 +110,28 @@ function extractAddressBlock(text) {
     return lines.slice(Math.max(0, pinIndex - 2), pinIndex + 2).join(', ');
   }
 
-  const candidate = lines.find((line) => /\b(?:Village|City|State|District|Pin|PIN|India)\b/i.test(line) && line.length > 20);
+  const candidate = lines.find(
+    (line) => /\b(?:Village|City|State|District|Pin|PIN|India)\b/i.test(line) && line.length > 20
+  );
   return candidate || null;
 }
 
-function extractVisualDobFromText(text) {
-  return extractDateOfBirth(text);
-}
-
-function normalizeGoogleVisionText(rawText) {
-  const text = normalizeText(rawText);
-  const mrzLine1 = extractMrzLine1(text);
-  const mrzLine2 = extractMrzLine2(text);
+/**
+ * Full normalisation of front-page OCR text.
+ * Extracts MRZ lines, passport number, DOB, and expiry.
+ */
+function normalizeFrontPageText(text) {
+  const normalized = normalizeText(text);
+  const mrzLine1 = extractMrzLine1(normalized);
+  const mrzLine2 = extractMrzLine2(normalized);
   const parsedMrz = parseMrzLine2(mrzLine2 || '');
   const mrzPassportNumber = parsedMrz?.passportNumber || null;
-  const mrzDob = yyMmDdToIso(parsedMrz?.dateOfBirthRaw || '');
-  const mrzExpiry = yyMmDdToIso(parsedMrz?.expiryDateRaw || '');
-  const passportNumber = pick(mrzPassportNumber, extractPassportNumber(text));
-  const dob = pick(mrzDob, extractDateOfBirth(text));
-  const expiry = pick(mrzExpiry, extractExpiryDate(text));
-  const fileNumber = extractFileNumber(text);
-  const addressBlock = extractAddressBlock(text);
+  const mrzDob    = yyMmDdToIso(parsedMrz?.dateOfBirthRaw || '');
+  const mrzExpiry = yyMmDdToIso(parsedMrz?.expiryDateRaw  || '');
+
+  const passportNumber = pick(mrzPassportNumber, extractPassportNumber(normalized));
+  const dob    = pick(mrzDob,    extractDateOfBirth(normalized));
+  const expiry = pick(mrzExpiry, extractExpiryDate(normalized));
 
   return {
     front: {
@@ -176,18 +141,47 @@ function normalizeGoogleVisionText(rawText) {
       passport_number: passportNumber,
       expiry_date: expiry
     },
+    passport_number: passportNumber,
+    date_of_birth: dob,
+    expiry_date: expiry,
+    raw: { text: normalized }
+  };
+}
+
+/**
+ * Back-page normalisation — deliberately does NOT attempt MRZ extraction.
+ * The Indian passport back page never contains an MRZ; running the MRZ
+ * extractor on it risks false positives from OCR noise that happens to
+ * look like a 42-44 character alpha-numeric string.
+ */
+function normalizeBackPageText(text) {
+  const normalized = normalizeText(text);
+  const fileNumber  = extractFileNumber(normalized);
+  const addressBlock = extractAddressBlock(normalized);
+
+  return {
     back: {
       file_number: fileNumber,
       address_block: addressBlock
     },
-    passport_number: passportNumber,
-    date_of_birth: dob,
-    expiry_date: expiry,
     file_number: fileNumber,
     address: addressBlock,
-    raw: {
-      text
-    }
+    raw: { text: normalized }
+  };
+}
+
+/** @deprecated Kept for backward-compat with existing tests; use the page-specific functions. */
+export function normalizeGoogleVisionText(rawText) {
+  const frontResult = normalizeFrontPageText(rawText);
+  // Run the text through the back-page extractor as well so legacy callers
+  // still get file_number and address from the same call.
+  const backResult = normalizeBackPageText(rawText);
+
+  return {
+    ...frontResult,
+    back: backResult.back,
+    file_number: frontResult.file_number || backResult.file_number,
+    address: frontResult.raw.text ? null : backResult.address  // front text won't have an address
   };
 }
 
@@ -201,12 +195,7 @@ async function detectTextFromImage(imageEncoded) {
 
   const text = result.fullTextAnnotation?.text || '';
 
-  return {
-    text,
-    raw: {
-      text
-    }
-  };
+  return { text, raw: { text } };
 }
 
 export async function extractPassportData(frontImageEncoded, backImageEncoded) {
@@ -215,8 +204,10 @@ export async function extractPassportData(frontImageEncoded, backImageEncoded) {
     detectTextFromImage(backImageEncoded)
   ]);
 
-  const frontResult = normalizeGoogleVisionText(frontResponse.text);
-  const backResult = normalizeGoogleVisionText(backResponse.text);
+  // Front page: full extraction (MRZ + passport fields).
+  const frontResult = normalizeFrontPageText(frontResponse.text);
+  // Back page: file number + address ONLY — no MRZ extraction.
+  const backResult  = normalizeBackPageText(backResponse.text);
 
   return {
     front: {
@@ -226,18 +217,16 @@ export async function extractPassportData(frontImageEncoded, backImageEncoded) {
     back: {
       ...backResult.back
     },
-    passport_number: pick(frontResult.passport_number, backResult.passport_number),
-    date_of_birth: pick(frontResult.date_of_birth, backResult.date_of_birth),
-    expiry_date: pick(frontResult.expiry_date, backResult.expiry_date),
-    file_number: pick(frontResult.file_number, backResult.file_number),
-    address: pick(frontResult.address, backResult.address),
+    passport_number: pick(frontResult.passport_number, null),
+    date_of_birth:   pick(frontResult.date_of_birth,   null),
+    expiry_date:     pick(frontResult.expiry_date,      null),
+    file_number:     pick(backResult.file_number,       null),
+    address:         pick(backResult.address,           null),
     raw: {
       google_vision: {
         front: frontResponse.raw.text,
-        back: backResponse.raw.text
+        back:  backResponse.raw.text
       }
     }
   };
 }
-
-export { normalizeGoogleVisionText };

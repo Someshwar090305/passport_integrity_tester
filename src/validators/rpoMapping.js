@@ -14,9 +14,17 @@ const RPO_REGION_MAP = {
   // East
   KOL: ['KOLKATA', 'WEST BENGAL'],
   BHU: ['BHUBANESWAR', 'ODISHA'],
-  GUW: ['GUWAHATI', 'ASSAM', 'NORTH EAST'],
+  GUW: ['GUWAHATI', 'ASSAM'],
   PAT: ['PATNA', 'BIHAR'],
   RAN: ['RANCHI', 'JHARKHAND'],
+  // North-East (previously missing)
+  IMP: ['IMPHAL', 'MANIPUR'],
+  SHL: ['SHILLONG', 'MEGHALAYA'],
+  AIZ: ['AIZAWL', 'MIZORAM'],
+  KOH: ['KOHIMA', 'NAGALAND'],
+  AGT: ['AGARTALA', 'TRIPURA'],
+  ITN: ['ITANAGAR', 'ARUNACHAL PRADESH'],
+  GNK: ['GANGTOK', 'SIKKIM'],
   // West
   BOM: ['MUMBAI', 'MAHARASHTRA'],
   PNQ: ['PUNE'],
@@ -41,9 +49,9 @@ const RPO_REGION_MAP = {
   // Others
   JAI: ['JAIPUR', 'RAJASTHAN'],
   JDH: ['JODHPUR'],
-  RNC: ['RANCHI'],
   GOI: ['GOA', 'PANAJI']
 };
+
 
 const RPO_PREFIX_ALIAS_MAP = {
   MA: 'MAA', // Observed in sample file numbers like MA207...

@@ -1,18 +1,11 @@
 import 'dotenv/config';
+import { pick, cleanMrzLine, normalizeDateString } from '../utils/helpers.js';
 
 const MODEL_POOL = [
   process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
   'llama-3.1-8b-instant'
 ];
 const RATE_LIMIT_ERROR_CODES = new Set([429, 403]);
-
-function pick(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '');
-}
-
-function cleanMrzLine(raw) {
-  return String(raw || '').replace(/[^A-Z0-9<]/gi, '').toUpperCase().trim();
-}
 
 function isLikelyMrzLine2(raw) {
   const normalized = cleanMrzLine(raw);
@@ -28,34 +21,6 @@ export function selectMrzLine2(line1, line2) {
   if (isLikelyMrzLine2(candidateLine1)) return candidateLine1;
 
   return candidateLine2 || candidateLine1 || null;
-}
-
-function normalizeDateString(raw) {
-  if (!raw) return null;
-  const value = String(raw).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-
-  const isoMatch = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-  if (isoMatch) return isoMatch[1];
-
-  const dmyMatch = value.match(/\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b/);
-  if (dmyMatch) {
-    const dd = dmyMatch[1].padStart(2, '0');
-    const mm = dmyMatch[2].padStart(2, '0');
-    const yyyy = dmyMatch[3];
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  const yymmddMatch = value.match(/\b(\d{6})\b/);
-  if (yymmddMatch) {
-    const yy = Number(yymmddMatch[1].slice(0, 2));
-    const mm = yymmddMatch[1].slice(2, 4);
-    const dd = yymmddMatch[1].slice(4, 6);
-    const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-    return `${year}-${mm}-${dd}`;
-  }
-
-  return null;
 }
 
 function extractJsonFromText(text) {

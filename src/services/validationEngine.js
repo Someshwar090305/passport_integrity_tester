@@ -10,19 +10,7 @@ import {
   validateRpoAddressMapping
 } from '../validators/rpoMapping.js';
 import { scoreIntegrity } from './integrityScoring.js';
-
-function yyMmDdToIso(value) {
-  if (!/^\d{6}$/.test(value)) return null;
-  const yy = Number(value.slice(0, 2));
-  const mm = value.slice(2, 4);
-  const dd = value.slice(4, 6);
-  const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-  return `${year}-${mm}-${dd}`;
-}
-
-function pick(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '');
-}
+import { pick, yyMmDdToIso } from '../utils/helpers.js';
 
 export function selectValidationResult(primaryValidation, fallbackValidation) {
   if (!fallbackValidation) return primaryValidation;

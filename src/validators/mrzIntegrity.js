@@ -5,10 +5,7 @@ import {
   validateMrzCompositeCheck
 } from './mrzChecksum.js';
 import { validateVisualMrzDobMatch } from './visualCrosscheck.js';
-
-function pick(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== '');
-}
+import { pick, yyMmDdToIso, cleanMrzLine } from '../utils/helpers.js';
 
 function normalizePassportNumber(value) {
   return String(value || '')
@@ -35,15 +32,6 @@ function normalizeDateForCompare(value) {
   return null;
 }
 
-function yyMmDdToIso(value) {
-  if (!/^\d{6}$/.test(value)) return null;
-  const yy = Number(value.slice(0, 2));
-  const mm = value.slice(2, 4);
-  const dd = value.slice(4, 6);
-  const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-  return `${year}-${mm}-${dd}`;
-}
-
 function datesMatch(left, right) {
   const a = normalizeDateForCompare(left);
   const b = normalizeDateForCompare(right);
@@ -55,7 +43,16 @@ function passportNumbersMatch(mrzPassport, visualPassport) {
   const mrz = normalizePassportNumber(mrzPassport);
   const visual = normalizePassportNumber(visualPassport);
   if (!mrz || !visual) return null;
-  return mrz === visual || mrz.startsWith(visual) || visual.startsWith(mrz);
+  if (mrz === visual) return true;
+  // Allow at most 1 trailing character of OCR truncation, but only when
+  // the shorter value is already >= 7 chars (prevents short strings from
+  // accidentally matching longer unrelated numbers).
+  const shorter = mrz.length <= visual.length ? mrz : visual;
+  const longer = mrz.length <= visual.length ? visual : mrz;
+  if (longer.length - shorter.length === 1 && shorter.length >= 7 && longer.startsWith(shorter)) {
+    return true;
+  }
+  return false;
 }
 
 export function runMrzIntegrityChecks(ocr, parsedMrz, mrzChecksumResult) {

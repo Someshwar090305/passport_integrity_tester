@@ -1,16 +1,33 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
+import { readFile, unlink } from 'node:fs/promises';
 import { redisConnection } from '../queue/passportQueue.js';
 import { extractPassportData } from '../providers/ocrClient.js';
 import { runValidation, selectValidationResult } from '../services/validationEngine.js';
 import { shouldUseLlmFallback, runLlmFallback, buildFallbackTrace } from '../services/llmFallback.js';
+import { logger } from '../utils/logger.js';
 
 const REQUIRED_ENV = ['GOOGLE_APPLICATION_CREDENTIALS'];
 const missingEnv = REQUIRED_ENV.filter((key) => !process.env[key]);
 if (missingEnv.length > 0) {
-  // eslint-disable-next-line no-console
-  console.error(`[worker] Missing required env vars: ${missingEnv.join(', ')}`);
+  logger.error('Missing required environment variables', { missing: missingEnv });
   process.exit(1);
+}
+
+/**
+ * Attempts to delete the temporary image files written by the API route.
+ * Failures are logged but do not propagate — a missed cleanup is non-fatal.
+ *
+ * @param {string[]} filePaths
+ */
+async function cleanupTempFiles(filePaths) {
+  await Promise.allSettled(
+    filePaths.map((p) =>
+      unlink(p).catch((err) =>
+        logger.warn('Failed to delete temp file', { path: p, error: err.message })
+      )
+    )
+  );
 }
 
 const worker = new Worker(
@@ -19,17 +36,26 @@ const worker = new Worker(
     const { jobId, front, back } = job.data;
     const queueWaitMs = Math.max(0, (job.processedOn || Date.now()) - job.timestamp);
 
+    logger.info('Processing passport job', { job_id: jobId, attempt: job.attemptsMade + 1 });
+
+    // Read image bytes from disk (the API route wrote them there to keep
+    // Redis memory usage low — only file paths travel through the queue).
+    const [frontBuffer, backBuffer] = await Promise.all([
+      readFile(front.path),
+      readFile(back.path)
+    ]);
+
     const extractionStart = Date.now();
     const ocrResult = await extractPassportData(
       {
         mimetype: front.mimetype,
         originalname: front.originalname,
-        dataBase64: front.dataBase64
+        dataBase64: frontBuffer.toString('base64')
       },
       {
         mimetype: back.mimetype,
         originalname: back.originalname,
-        dataBase64: back.dataBase64
+        dataBase64: backBuffer.toString('base64')
       }
     );
 
@@ -38,9 +64,23 @@ const worker = new Worker(
     const validation = runValidation(ocrResult);
     const internalValidationMs = Date.now() - validationStart;
 
+    logger.info('First-pass validation complete', {
+      job_id: jobId,
+      status: validation.verificationStatus,
+      score: validation.integrityScore,
+      sdk_extraction_ms: sdkExtractionMs,
+      internal_validation_ms: internalValidationMs
+    });
+
     let llmFallback = null;
     if (shouldUseLlmFallback(ocrResult, validation)) {
+      logger.info('Triggering LLM fallback', { job_id: jobId, reason: 'first-pass was weak' });
       llmFallback = await runLlmFallback(ocrResult);
+      logger.info('LLM fallback complete', {
+        job_id: jobId,
+        status: llmFallback?.status,
+        model: llmFallback?.model || null
+      });
     }
 
     const llmStructured = llmFallback?.status === 'success' ? llmFallback.extracted.structured : null;
@@ -105,7 +145,7 @@ const worker = new Worker(
       llmFallback?.status === 'success'
         ? {
             used: true,
-            model: llmFallback?.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+            model: llmFallback?.model || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
           }
         : {
             used: false,
@@ -116,6 +156,13 @@ const worker = new Worker(
     const fallbackTrace = llmFallback?.status === 'success'
       ? buildFallbackTrace(validation, llmFallback, effectiveValidation, validationInput)
       : null;
+
+    logger.info('Job completed', {
+      job_id: jobId,
+      verification_status: effectiveValidation.verificationStatus,
+      integrity_score: effectiveValidation.integrityScore,
+      llm_used: fallbackSummary.used
+    });
 
     return {
       job_id: jobId,
@@ -143,12 +190,27 @@ const worker = new Worker(
   { connection: redisConnection }
 );
 
-worker.on('completed', (job) => {
-  // eslint-disable-next-line no-console
-  console.log(`[worker] completed job ${job.id}`);
+worker.on('completed', async (job) => {
+  logger.info('Worker: job completed', { job_id: job.data?.jobId, bq_id: job.id });
+  // Delete temp image files now that the job is fully done.
+  const { front, back } = job.data || {};
+  if (front?.path || back?.path) {
+    await cleanupTempFiles([front?.path, back?.path].filter(Boolean));
+  }
 });
 
-worker.on('failed', (job, err) => {
-  // eslint-disable-next-line no-console
-  console.error(`[worker] failed job ${job?.id}`, err);
+worker.on('failed', async (job, err) => {
+  logger.error('Worker: job failed', {
+    job_id: job?.data?.jobId,
+    bq_id: job?.id,
+    attempt: job?.attemptsMade,
+    error: err?.message
+  });
+  // Only clean up temp files once the job has exhausted all retries.
+  if (job && job.attemptsMade >= (job.opts?.attempts ?? 1)) {
+    const { front, back } = job.data || {};
+    if (front?.path || back?.path) {
+      await cleanupTempFiles([front?.path, back?.path].filter(Boolean));
+    }
+  }
 });

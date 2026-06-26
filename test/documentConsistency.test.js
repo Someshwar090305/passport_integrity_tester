@@ -17,9 +17,16 @@ test('runDocumentConsistencyChecks passes when front/back agree', () => {
 });
 
 test('runDocumentConsistencyChecks fails on conflicting passport numbers', () => {
+  // Visual passport number on the front contradicts the MRZ-encoded number.
+  // ocr.back.passport_number is never populated by the OCR client (the Indian
+  // back page has no visual passport number field), so the real conflict check
+  // compares the front visual field against the MRZ-derived value.
   const result = runDocumentConsistencyChecks({
-    front: { passport_number: 'A1111111' },
-    back: { passport_number: 'B2222222' },
+    front: {
+      passport_number: 'A1111111',
+      // MRZ line 2 encodes a different passport number — genuine conflict
+      mrz_line2: 'B2222222<7IND8207089F2503228'
+    },
     passport_number: 'A1111111'
   });
 

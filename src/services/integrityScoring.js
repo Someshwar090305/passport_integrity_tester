@@ -1,3 +1,7 @@
+// viz_mrz_crosscheck_valid is intentionally absent from CHECK_DEFINITIONS.
+// It is a convenience flag derived from mrz_visual_dob_match; scoring it
+// separately would double-count the same DOB mismatch (24 pts penalty for
+// one failure instead of 12). It remains in integrityFlags for API output.
 const CHECK_DEFINITIONS = {
   mrz_checksums_valid: { severity: 'critical', weight: 20, message: 'MRZ checksum validation failed' },
   mrz_composite_check_valid: { severity: 'medium', weight: 8, message: 'MRZ composite check digit failed' },
@@ -6,7 +10,6 @@ const CHECK_DEFINITIONS = {
   mrz_visual_passport_match: { severity: 'critical', weight: 15, message: 'Visual passport number does not match MRZ' },
   mrz_visual_dob_match: { severity: 'medium', weight: 12, message: 'Visual DOB does not match MRZ' },
   mrz_visual_expiry_match: { severity: 'medium', weight: 10, message: 'Visual expiry does not match MRZ' },
-  viz_mrz_crosscheck_valid: { severity: 'medium', weight: 12, message: 'Visual vs MRZ cross-check failed' },
   document_not_expired: { severity: 'critical', weight: 15, message: 'Passport is expired' },
   dob_plausible: { severity: 'critical', weight: 8, message: 'Date of birth is not plausible' },
   expiry_after_dob: { severity: 'critical', weight: 8, message: 'Expiry date is not after date of birth' },
@@ -21,6 +24,7 @@ const SKIPPED_WHEN_MISSING = new Set([
   'mrz_line1_parse_valid',
   'mrz_composite_check_valid',
   'mrz_visual_passport_match',
+  'mrz_visual_dob_match',
   'mrz_visual_expiry_match',
   'file_number_format_valid',
   'pin_code_format_valid',
@@ -37,10 +41,6 @@ function isApplicable(flag, value, context = {}) {
   }
 
   if (flag === 'mrz_visual_dob_match' && context.visual_dob_present === false) {
-    return false;
-  }
-
-  if (flag === 'viz_mrz_crosscheck_valid' && context.visual_dob_present === false) {
     return false;
   }
 
