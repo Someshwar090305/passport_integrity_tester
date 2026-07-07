@@ -97,11 +97,16 @@ export function runMrzIntegrityChecks(ocr, parsedMrz, mrzChecksumResult) {
     mrz_composite_check_valid: compositeResult.applicable ? compositeResult.valid : true,
     mrz_composite_check_applicable: compositeResult.applicable,
     mrz_country_valid: countryValid,
-    mrz_visual_passport_match: passportMatch === null ? true : passportMatch,
+    // null means one or both passport numbers were absent from OCR.
+    // Return false so a missing visual number is not mistaken for a confirmed
+    // match — the scoring layer will gate this via visual_passport_present.
+    mrz_visual_passport_match: passportMatch === null ? false : passportMatch,
     mrz_visual_dob_match: dobMatch === null ? false : dobMatch,
     mrz_visual_expiry_match: expiryMatch === null ? true : expiryMatch,
     mrz_checksums_valid: mrzChecksumResult.valid,
     visual_dob_present: visualDob !== null && visualDob !== undefined,
+    visual_passport_present: Boolean(visualPassport),
+    mrz_passport_present: Boolean(mrzPassport),
     details: {
       mrz_line1: parsedLine1,
       mrz_line2: mrzLine2 || null,

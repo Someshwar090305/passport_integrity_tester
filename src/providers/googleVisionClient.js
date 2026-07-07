@@ -94,6 +94,22 @@ function extractFileNumber(text) {
   return match?.[1] || null;
 }
 
+/**
+ * Extracts the passport number printed on the back (address) page of an
+ * Indian passport. The pattern requires the "Passport No." label to avoid
+ * false positives from the file number or other alpha-numeric strings.
+ *
+ * Deliberately uses stricter patterns than extractPassportNumber (front page)
+ * to minimise false positives from OCR noise on the back page.
+ */
+function extractPassportNumberFromBackPage(text) {
+  if (!text) return null;
+  const match =
+    text.match(/\bPassport\s*(?:No|Number)\.?\s*[:\-]?\s*([A-Z][0-9]{7,8})\b/i) ||
+    text.match(/\bP\.?\s*No\.?\s*[:\-]?\s*([A-Z][0-9]{7,8})\b/i);
+  return match ? String(match[1]).toUpperCase() : null;
+}
+
 function extractAddressBlock(text) {
   if (!text) return null;
   const normalized = text.replace(/\n{2,}/g, '\n').trim();
@@ -156,16 +172,21 @@ function normalizeFrontPageText(text) {
  */
 function normalizeBackPageText(text) {
   const normalized = normalizeText(text);
-  const fileNumber  = extractFileNumber(normalized);
+  const fileNumber   = extractFileNumber(normalized);
   const addressBlock = extractAddressBlock(normalized);
+  // The back page prints the passport number under a "Passport No." label
+  // on most Indian passports. Extracted here so it can be used as the
+  // cross-page anchor in documentConsistency checks.
+  const passportNumber = extractPassportNumberFromBackPage(normalized);
 
   return {
     back: {
-      file_number: fileNumber,
-      address_block: addressBlock
+      file_number:     fileNumber,
+      address_block:   addressBlock,
+      passport_number: passportNumber   // null when not printed / not readable
     },
     file_number: fileNumber,
-    address: addressBlock,
+    address:     addressBlock,
     raw: { text: normalized }
   };
 }
@@ -186,10 +207,12 @@ export function normalizeGoogleVisionText(rawText) {
 }
 
 async function detectTextFromImage(imageEncoded) {
-  const buffer = Buffer.from(imageEncoded.dataBase64, 'base64');
+  // imageEncoded.dataBase64 is already a base64 string — pass it directly to
+  // the Vision API. The previous Buffer.from(..., 'base64').toString('base64')
+  // round-trip was a wasted allocation on every image.
   const [result] = await getClient().documentTextDetection({
     image: {
-      content: buffer.toString('base64')
+      content: imageEncoded.dataBase64
     }
   });
 

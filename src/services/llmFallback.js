@@ -23,26 +23,40 @@ export function selectMrzLine2(line1, line2) {
   return candidateLine2 || candidateLine1 || null;
 }
 
-function extractJsonFromText(text) {
+// Exported so it can be unit-tested directly.
+export function extractJsonFromText(text) {
   if (!text) return null;
 
-  const trimmed = String(text).trim();
-  const fenced = trimmed.match(/```json\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) {
-    return JSON.parse(fenced[1]);
-  }
+  try {
+    const trimmed = String(text).trim();
+    const fenced = trimmed.match(/```json\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) {
+      return JSON.parse(fenced[1]);
+    }
 
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
-  }
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+    }
 
-  return JSON.parse(trimmed);
+    return JSON.parse(trimmed);
+  } catch {
+    // LLM returned text that could not be parsed as JSON.
+    // Return null; the caller will convert this to a structured error response.
+    return null;
+  }
 }
 
 export function shouldUseLlmFallback(ocrResult, validationResult) {
   if (!process.env.GROQ_API_KEY) {
+    return false;
+  }
+
+  // Respect the explicit opt-out flag. Checked here (not inside runLlmFallback)
+  // so the worker never enters the fallback branch and no misleading
+  // "Triggering LLM fallback" log is emitted when the feature is disabled.
+  if (process.env.GROQ_FALLBACK_DISABLED === 'true') {
     return false;
   }
 
@@ -250,6 +264,15 @@ export async function runLlmFallback(ocrResult) {
         }
 
         const extracted = extractJsonFromText(rawText);
+
+        if (!extracted) {
+          return {
+            status: 'error',
+            message: 'LLM response could not be parsed as JSON',
+            model: modelName
+          };
+        }
+
         const normalized = normalizeLlmExtraction(extracted);
 
         return {

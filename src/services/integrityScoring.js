@@ -44,6 +44,15 @@ function isApplicable(flag, value, context = {}) {
     return false;
   }
 
+  // Skip the passport cross-check only when OCR produced no passport number on
+  // either side. If at least one side has a number and the other does not, that
+  // asymmetry is suspicious and should be scored as a failure (weight: 15).
+  if (flag === 'mrz_visual_passport_match' &&
+      !context.visual_passport_present &&
+      !context.mrz_passport_present) {
+    return false;
+  }
+
   if (flag === 'mrz_line1_parse_valid' && !context.mrz_line1_present) {
     return false;
   }

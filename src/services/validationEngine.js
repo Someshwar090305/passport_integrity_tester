@@ -83,6 +83,8 @@ export function runValidation(ocr) {
 
   const scoringContext = {
     visual_dob_present: mrzIntegrity.visual_dob_present,
+    visual_passport_present: mrzIntegrity.visual_passport_present,
+    mrz_passport_present: mrzIntegrity.mrz_passport_present,
     mrz_composite_check_applicable: mrzIntegrity.mrz_composite_check_applicable,
     mrz_line1_present: Boolean(mrzLine1),
     file_number_present: Boolean(fileNumber),
