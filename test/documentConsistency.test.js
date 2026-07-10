@@ -159,3 +159,100 @@ test('passes when both passport and RPO are internally consistent', () => {
   assert.equal(result.details.passport_consistent, true);
   assert.equal(result.details.rpo_consistent, true);
 });
+
+// ── RPO Cross-Page Consistency ────────────────────────────────────────────────
+
+test('cross-page: fails when front Place of Issue RPO conflicts with back File RPO', () => {
+  const result = runDocumentConsistencyChecks({
+    front: {
+      passport_number: 'A1234567',
+      mrz_line2: 'A12345670IND9001011M3001011<<<<<<<<<<<<<6',
+      place_of_issue: 'MUMBAI' // front RPO is BOM
+    },
+    back: {
+      file_number: 'MAA1234567890', // back RPO is MAA (Chennai)
+      address_block: '12 Main St, Chennai PIN 600040, Tamil Nadu, India'
+    }
+  });
+
+  assert.equal(result.details.rpo_cross_page_consistent, false);
+  assert.equal(result.front_back_consistency_valid, false);
+});
+
+test('cross-page: fails when front Place of Issue RPO conflicts with back Address RPO', () => {
+  const result = runDocumentConsistencyChecks({
+    front: {
+      passport_number: 'A1234567',
+      mrz_line2: 'A12345670IND9001011M3001011<<<<<<<<<<<<<6',
+      place_of_issue: 'MUMBAI' // front RPO is BOM
+    },
+    back: {
+      file_number: 'BOM1234567890', // back RPO is BOM
+      address_block: '12 Main St, Chennai PIN 600040, Tamil Nadu, India' // back Address RPO is MAA
+    }
+  });
+
+  assert.equal(result.details.rpo_address_cross_page_consistent, false);
+  assert.equal(result.front_back_consistency_valid, false);
+});
+
+// ── MRZ optional data ↔ File Number cross-page check (Tier 2) ────────────────
+
+test('Tier 2: PASSES when MRZ optional data matches file number numeric portion', () => {
+  // MRZ: C2203304<6IND7410149M34091092076925493724<02
+  //                                   optional data = 2076925493724
+  // File No: MA2076925493724 → numeric = 2076925493724  ✓
+  const result = runDocumentConsistencyChecks({
+    front: {
+      passport_number: 'C2203304',
+      mrz_line2: 'C2203304<6IND7410149M34091092076925493724<02',
+      place_of_issue: 'CHENNAI'
+    },
+    back: {
+      file_number: 'MA2076925493724',
+      address_block: 'AP 551 H BLOCK, ANNA NAGAR, CHENNAI, PIN:600040, TAMIL NADU, INDIA'
+    }
+  });
+
+  assert.equal(result.front_back_consistency_valid, true);
+  assert.equal(result.details.cross_page_check_performed, true,
+    'Tier 2 must set cross_page_check_performed=true');
+  assert.equal(result.details.file_number_mrz_match, true);
+  assert.equal(result.details.mrz_optional_data, '2076925493724');
+  assert.equal(result.details.file_number_numeric, '2076925493724');
+});
+
+test('Tier 2: FAILS when MRZ optional data does NOT match file number numeric portion', () => {
+  // Front MRZ optional data = 2076925493724 (belongs to file MA2076925493724)
+  // Back file number = MA3075527337225 → numeric = 3075527337225 (DIFFERENT passport)
+  const result = runDocumentConsistencyChecks({
+    front: {
+      passport_number: 'C2203304',
+      mrz_line2: 'C2203304<6IND7410149M34091092076925493724<02',
+      place_of_issue: 'CHENNAI'
+    },
+    back: {
+      file_number: 'MA3075527337225',
+      address_block: 'HASTHINAPURAM, CHENNAI, PIN:600064, TAMIL NADU, INDIA'
+    }
+  });
+
+  assert.equal(result.front_back_consistency_valid, false,
+    'MUST fail when file number does not match MRZ optional data');
+  assert.equal(result.details.cross_page_check_performed, true);
+  assert.equal(result.details.file_number_mrz_match, false);
+  assert.equal(result.details.mrz_optional_data, '2076925493724');
+  assert.equal(result.details.file_number_numeric, '3075527337225');
+});
+
+// ── Unlabeled barcode passport number extraction ──────────────────────────────
+
+test('parseMrzLine2 extracts optionalData from positions 28–41', async () => {
+  const { parseMrzLine2 } = await import('../src/validators/mrzChecksum.js');
+  // C2203304<6IND7410149M34091092076925493724<02
+  //                              positions 28-41: 2076925493724<
+  const parsed = parseMrzLine2('C2203304<6IND7410149M34091092076925493724<02');
+  assert.ok(parsed, 'parseMrzLine2 should return a result');
+  assert.equal(parsed.optionalData, '2076925493724',
+    'optional data should be the file number digits without filler');
+});

@@ -103,11 +103,21 @@ export function parseMrzLine2(mrzLine2 = '') {
     return null;
   }
 
+  // Optional data field (positions 28-41) — India encodes the numeric portion
+  // of the application file number here (without the RPO letter prefix).
+  // Strip filler characters (<) and trim to get the raw numeric string.
+  const optionalDataRaw = normalized.length >= 42
+    ? normalized.slice(28, 42).replace(/</g, '').trim()
+    : null;
+
   return {
     passportNumber: normalized.slice(0, 9).replace(/</g, ''),
     nationality: normalized.slice(10, 13).replace(/</g, '') || null,
     dateOfBirthRaw: normalized.slice(13, 19),
     sex: normalized[20] || null,
-    expiryDateRaw: normalized.slice(21, 27)
+    expiryDateRaw: normalized.slice(21, 27),
+    // Numeric portion of the Indian file number encoded in the MRZ optional
+    // data field. Empty string normalised to null.
+    optionalData: optionalDataRaw || null
   };
 }

@@ -152,3 +152,27 @@ export function inferRpoCodeFromAddress(parsedAddress) {
   }
   return null;
 }
+
+export function inferRpoCodeFromCity(cityName = '') {
+  const normalized = String(cityName).toUpperCase().trim();
+  if (!normalized) return null;
+
+  for (const [code, regions] of Object.entries(RPO_REGION_MAP)) {
+    if (regions.some((region) => normalized.includes(region) || region.includes(normalized))) {
+      return code;
+    }
+  }
+  return null;
+}
+
+export function extractYearFromFileNumber(fileNumber = '') {
+  const normalized = String(fileNumber).toUpperCase().trim();
+  if (!normalized) return null;
+
+  const match = normalized.match(/^[A-Z]+(\d{2})/);
+  if (match) {
+    const yy = Number(match[1]);
+    return yy >= 50 ? 1900 + yy : 2000 + yy;
+  }
+  return null;
+}

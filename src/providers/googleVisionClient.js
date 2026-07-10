@@ -85,6 +85,22 @@ function extractExpiryDate(text) {
   return normalizeDateString(match?.[1] || null);
 }
 
+function extractIssueDate(text) {
+  if (!text) return null;
+  const match =
+    text.match(/\bDate\s*of\s*Issue\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
+    text.match(/\bIssue\s*Date\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i);
+  return normalizeDateString(match?.[1] || null);
+}
+
+function extractPlaceOfIssue(text) {
+  if (!text) return null;
+  const match = text.match(/\bPlace\s*of\s*Issue\s*[\n\r]*[:\-]?[\n\r]*\s*([A-Z\s]{3,30})\b/i);
+  if (!match) return null;
+  const city = match[1].split('\n')[0].trim().toUpperCase();
+  return city || null;
+}
+
 function extractFileNumber(text) {
   if (!text) return null;
   const match =
@@ -95,20 +111,60 @@ function extractFileNumber(text) {
 }
 
 /**
- * Extracts the passport number printed on the back (address) page of an
- * Indian passport. The pattern requires the "Passport No." label to avoid
- * false positives from the file number or other alpha-numeric strings.
+ * Extracts the current passport number from the back (address) page.
  *
- * Deliberately uses stricter patterns than extractPassportNumber (front page)
- * to minimise false positives from OCR noise on the back page.
+ * Indian passport numbers are always 8 characters, in one of two formats:
+ *   - Legacy : 1 letter + 7 digits   (e.g. M7229450, C2203304)
+ *   - Modern : 2 letters + 6 digits  (e.g. AG296600)
+ *
+ * Two sources are tried in order:
+ *
+ * 1. Labeled — "Passport No. XXXXXXXX" (found on some passport layouts)
+ *    Negative lookbehind excludes "Old Passport No."
+ *
+ * 2. Barcode-adjacent (unlabeled) — the current passport number is printed
+ *    as a plain string just below the barcode in the top-right corner.
+ *    Google Vision OCR surfaces it as a standalone line, often just after
+ *    the "Address" label block.
+ *
+ *    To avoid false positives we first surgically remove the entire
+ *    "Old Passport No." block (label + number value + date + city),
+ *    then match the FIRST standalone passport-format token remaining.
  */
 function extractPassportNumberFromBackPage(text) {
   if (!text) return null;
-  const match =
-    text.match(/\bPassport\s*(?:No|Number)\.?\s*[:\-]?\s*([A-Z][0-9]{7,8})\b/i) ||
-    text.match(/\bP\.?\s*No\.?\s*[:\-]?\s*([A-Z][0-9]{7,8})\b/i);
-  return match ? String(match[1]).toUpperCase() : null;
+
+  // ── Pattern 1: Labeled (but NOT "Old Passport No.") ──────────────────────
+  // Matches both legacy (1-letter) and modern (2-letter) formats.
+  const labeledMatch =
+    text.match(/(?<!Old\s+)\bPassport\s*(?:No|Number)\.?\s*[:\-]?\s*([A-Z]{1,2}[0-9]{6,7})\b/i) ||
+    text.match(/\bP\.?\s*No\.?\s*[:\-]?\s*([A-Z]{1,2}[0-9]{6,7})\b/i);
+  if (labeledMatch) return String(labeledMatch[1]).toUpperCase();
+
+  // ── Pattern 2: Unlabeled barcode-adjacent ────────────────────────────────
+  // Strip the ENTIRE "Old Passport No." block before searching.
+  // The block structure is:
+  //   "... Old Passport No. with Date and Place of Issue\n"
+  //   "<passport-number>\n"          ← must remove this too
+  //   "<date dd/mm/yyyy>\n"          ← and this
+  //   "<city name>\n"                ← and this
+  //
+  // Also strip the File No. line (always 2+ letters + 8+ digits).
+  const cleaned = text
+    .replace(
+      /Old\s+Passport\s*(?:No|Number)[^\n]*\n(?:[A-Z]{1,2}[0-9]{6,7}\n)?(?:\d{2}\/\d{2}\/\d{4}\n)?(?:[A-Z][A-Z\s]{1,20}\n)?/gi,
+      ''
+    )
+    .replace(/(?:पुराने[^\n]*\n)/g, '')  // strip Hindi "Old Passport" label if present
+    .replace(/File\s*(?:No|Number)\.?[^\n]*/gi, '');
+
+  // Find the first standalone passport-format number (1–2 letters + 6–7 digits).
+  const standaloneMatch = cleaned.match(/(?:^|\n)\s*([A-Z]{1,2}[0-9]{6,7})\s*(?:\n|$)/);
+  if (standaloneMatch) return String(standaloneMatch[1]).toUpperCase();
+
+  return null;
 }
+
 
 function extractAddressBlock(text) {
   if (!text) return null;
@@ -148,6 +204,8 @@ function normalizeFrontPageText(text) {
   const passportNumber = pick(mrzPassportNumber, extractPassportNumber(normalized));
   const dob    = pick(mrzDob,    extractDateOfBirth(normalized));
   const expiry = pick(mrzExpiry, extractExpiryDate(normalized));
+  const issueDate = extractIssueDate(normalized);
+  const placeOfIssue = extractPlaceOfIssue(normalized);
 
   return {
     front: {
@@ -155,11 +213,15 @@ function normalizeFrontPageText(text) {
       mrz_line2: mrzLine2,
       date_of_birth: dob,
       passport_number: passportNumber,
-      expiry_date: expiry
+      expiry_date: expiry,
+      date_of_issue: issueDate,
+      place_of_issue: placeOfIssue
     },
     passport_number: passportNumber,
     date_of_birth: dob,
     expiry_date: expiry,
+    date_of_issue: issueDate,
+    place_of_issue: placeOfIssue,
     raw: { text: normalized }
   };
 }
@@ -243,6 +305,8 @@ export async function extractPassportData(frontImageEncoded, backImageEncoded) {
     passport_number: pick(frontResult.passport_number, null),
     date_of_birth:   pick(frontResult.date_of_birth,   null),
     expiry_date:     pick(frontResult.expiry_date,      null),
+    date_of_issue:   pick(frontResult.front.date_of_issue, null),
+    place_of_issue:  pick(frontResult.front.place_of_issue, null),
     file_number:     pick(backResult.file_number,       null),
     address:         pick(backResult.address,           null),
     raw: {
