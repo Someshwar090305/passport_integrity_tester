@@ -162,6 +162,24 @@ function extractPassportNumberFromBackPage(text) {
   const standaloneMatch = cleaned.match(/(?:^|\n)\s*([A-Z]{1,2}[0-9]{6,7})\s*(?:\n|$)/);
   if (standaloneMatch) return String(standaloneMatch[1]).toUpperCase();
 
+  // ── Pattern 3: OCR confusable recovery ────────────────────────────────────
+  // Google Vision commonly misreads passport-number leading letters as digits:
+  //   Z → 2  (most common — same shape)
+  //   O → 0
+  //   I → 1
+  // When a standalone 8-char token starts with 2/0/1 followed by 7 digits, try
+  // substituting back to the likely letter. The corrected value is returned only
+  // if it matches a plausible passport-number pattern.
+  const confusableMap = { '2': 'Z', '0': 'O', '1': 'I' };
+  const confusableMatch = cleaned.match(/(?:^|\n)\s*([201][0-9]{7})\s*(?:\n|$)/);
+  if (confusableMatch) {
+    const raw = confusableMatch[1];
+    const corrected = (confusableMap[raw[0]] || raw[0]) + raw.slice(1);
+    if (/^[A-Z][0-9]{7}$/.test(corrected)) {
+      return corrected;
+    }
+  }
+
   return null;
 }
 

@@ -35,7 +35,7 @@ const RPO_REGION_MAP = {
   BPL: ['BHOPAL', 'MADHYA PRADESH'],
   IDR: ['INDORE'],
   // South
-  MAA: ['CHENNAI', 'TAMIL NADU'],
+  MAA: ['CHENNAI', 'TAMIL NADU', 'MADRAS'],  // MADRAS is the pre-1996 name
   BLR: ['BENGALURU', 'BANGALORE', 'KARNATAKA'],
   HYD: ['HYDERABAD', 'TELANGANA'],
   COK: ['KOCHI', 'COCHIN', 'KERALA'],
@@ -54,19 +54,34 @@ const RPO_REGION_MAP = {
 
 
 const RPO_PREFIX_ALIAS_MAP = {
-  MA: 'MAA', // Observed in sample file numbers like MA207...
-  BO: 'BOM',
+  // 2-letter shorthand aliases (observed in file numbers)
+  MA: 'MAA', // MA207... → RPO Chennai
+  BO: 'BOM', // BO... → RPO Mumbai
   DE: 'DEL',
   BL: 'BLR',
   HY: 'HYD',
-  KO: 'KOL'
+  KO: 'KOL',
+  // Pre-2014 / old-city-name 3-letter aliases → normalise to current code.
+  // These appear in file numbers of passports issued before city renames.
+  MAS: 'MAA', // Madras → Chennai
+  CAL: 'KOL', // Calcutta → Kolkata
+  // BOM is already in RPO_REGION_MAP, so no alias needed
 };
 
 export function extractRpoCode(fileNumber = '') {
   const normalized = String(fileNumber).toUpperCase().trim();
-  const match = normalized.match(/^[A-Z]{3}/);
-  if (match) return match[0];
 
+  // Try 3-letter prefix first (most file numbers start with 3 letters).
+  const threeLetter = normalized.match(/^[A-Z]{3}(?=[A-Z0-9])/);
+  if (threeLetter) {
+    const prefix = threeLetter[0];
+    // Check alias map first (e.g. MAS → MAA, CAL → KOL)
+    if (RPO_PREFIX_ALIAS_MAP[prefix]) return RPO_PREFIX_ALIAS_MAP[prefix];
+    // Then check if it is already a canonical code
+    if (RPO_REGION_MAP[prefix]) return prefix;
+  }
+
+  // Fall back to 2-letter prefix alias (e.g. MA → MAA, BO → BOM)
   const twoLetter = normalized.match(/^[A-Z]{2}(?=\d)/);
   if (!twoLetter) return null;
   return RPO_PREFIX_ALIAS_MAP[twoLetter[0]] || null;
@@ -75,8 +90,12 @@ export function extractRpoCode(fileNumber = '') {
 export function parseAddressBlock(addressText = '') {
   const raw = String(addressText || '');
   const compact = raw.replace(/\s+/g, ' ').trim();
-  const pinMatch = compact.match(/\b(?:PIN\s*[:\-]?\s*)?(\d{6})\b/i);
-  const pinCode = pinMatch ? pinMatch[1] : null;
+  // Match 6 consecutive digits (standard) OR 3+space+3 (OCR space-split, e.g. "600 024").
+  const pinMatch = compact.match(/\b(?:PIN\s*[:\-]?\s*)?(\d{6})\b/i) ||
+    compact.match(/\b(\d{3})\s(\d{3})\b/);
+  const pinCode = pinMatch
+    ? (pinMatch[2] ? pinMatch[1] + pinMatch[2] : pinMatch[1])  // join space-split
+    : null;
 
   // Normalize key separators around PIN and commas to improve regex extraction.
   const normalized = compact

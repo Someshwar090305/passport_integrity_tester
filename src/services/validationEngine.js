@@ -123,7 +123,11 @@ export function runValidation(ocr) {
       back_page: {
         file_number_raw: fileNumber || null,
         address_block_raw: addressRaw || null,
-        parsed_address: parsedAddress
+        parsed_address: parsedAddress,
+        // Passport number extracted from the barcode printed on the back page
+        // (top-right corner). null when OCR could not read it (e.g. misread Z→2).
+        // In that case Tier 2 (MRZ optional data ↔ file number) takes over.
+        passport_number_raw: pick(ocr?.back?.passport_number, null)
       },
       inferred: {
         rpo_code: rpoCode || null

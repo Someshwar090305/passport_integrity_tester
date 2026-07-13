@@ -19,7 +19,10 @@ function cleanMrzLine(raw) {
 
 export function parseMrzLine1(mrzLine1 = '') {
   const normalized = cleanMrzLine(mrzLine1);
-  if (!normalized.startsWith('P<') || normalized.length < 39) {
+  // Standard TD3 MRZ line 1 is 44 chars, but pre-2014 Indian passports
+  // were sometimes printed with shorter lines (as few as 34 chars).
+  // We pad to 44 before slicing, so 34 is a safe minimum.
+  if (!normalized.startsWith('P<') || normalized.length < 34) {
     return null;
   }
 
