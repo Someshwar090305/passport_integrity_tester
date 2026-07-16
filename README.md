@@ -8,8 +8,8 @@ A Node.js service for validating Indian passport images by combining OCR, a laye
 - Writes uploaded images to a local temp directory (keeps Redis memory lean)
 - Queues the job for background processing using BullMQ (3 retry attempts with exponential backoff)
 - Runs Google Cloud Vision OCR on both pages in parallel
-- Front page: extracts MRZ lines, passport number, DOB, and expiry
-- Back page: extracts file number and address only (no MRZ extraction — prevents false positives)
+  - Front page: extracts MRZ lines, passport number, DOB, expiry, date of issue, and place of issue
+  - Back page: extracts file number, address, and barcode-adjacent passport number (no MRZ extraction — prevents false positives)
 - Runs a 5-layer deterministic integrity pipeline and computes a weighted score
 - Optionally invokes a Groq LLM fallback when the first pass is weak, then re-validates with the corrected data
 - Returns `202 Accepted` immediately; poll `GET /api/v1/jobs/:jobId` for results
@@ -50,7 +50,7 @@ src/
     mrzIntegrity.js         — Full MRZ integrity checks (checksums, composite, visual cross-matches)
     temporalIntegrity.js    — Expiry, DOB plausibility, expiry-after-DOB
     backPageIntegrity.js    — File number format, PIN format, address structure
-    documentConsistency.js  — Visual passport number vs MRZ-encoded number, RPO alignment
+    documentConsistency.js  — Cross-page consistency: passport number, MRZ optional data, RPO alignment
     visualCrosscheck.js     — Visual DOB vs MRZ DOB comparison
     rpoMapping.js           — RPO code extraction, address parsing, region mapping
   worker/
@@ -68,6 +68,7 @@ test/
   backPageIntegrity.test.js
   documentConsistency.test.js
   integrityScoring.test.js
+  passportWorker.test.js
 ```
 
 ## Prerequisites
@@ -273,7 +274,8 @@ Poll until the job finishes.
         "pin_code": "600040",
         "city": "CHENNAI",
         "state": "TAMIL NADU"
-      }
+      },
+      "passport_number_raw": "A1234567"
     },
     "inferred": {
       "rpo_code": "MAA"
@@ -324,10 +326,10 @@ The validation engine runs five layers in sequence:
 
 | Layer | Checks |
 |---|---|
-| **1. MRZ integrity** | Checksum digits (passport, DOB, expiry), composite check digit (when full 44-char line available), line 1 parse, country/nationality must be `IND`, visual vs MRZ passport number, DOB, and expiry cross-matches |
+| **1. MRZ integrity** | Checksum digits (passport, DOB, expiry), composite check digit (when full 44-char line is available), line 1 parse, country/nationality must be `IND`, visual vs MRZ cross-matches for passport number, DOB, and expiry |
 | **2. Temporal integrity** | Passport not expired, DOB is plausible (between 1900 and today, max 120 years ago), expiry is after DOB |
-| **3. Back-page integrity** | File number matches `[A-Z]{2,3}[0-9]{8,15}` format, PIN is 6-digit, address has sufficient structure |
-| **4. Document consistency** | Visual passport number matches MRZ-encoded number; file number RPO matches address RPO |
+| **3. Back-page integrity** | File number matches `[A-Z]{2,4}[0-9]{8,15}` format, PIN is 6-digit and non-zero-prefixed, address has sufficient structure |
+| **4. Document consistency** | **Tier 1:** Passport number on back page vs MRZ-parsed passport number (primary cross-page anchor). **Tier 2:** MRZ optional data field (positions 28–41 of line 2) vs numeric portion of back-page file number — checksum-protected. Falls back to intra-front visual vs MRZ comparison when neither tier is applicable. RPO code from file number vs address region. |
 | **5. RPO mapping** | File number prefix maps to the correct geographic region for the parsed address |
 
 ### Scoring and tiers
@@ -353,13 +355,16 @@ Each check carries a weight. Failing a check deducts that weight from a starting
 | `mrz_line1_parse_valid` | medium | 5 |
 | `visual_dob_missing` *(synthetic)* | medium | 8 |
 
-> **Note:** `viz_mrz_crosscheck_valid` appears in `integrity_flags` as a convenience field derived from `mrz_visual_dob_match` but is **not scored independently** — it was removed from the scoring table to prevent double-counting the same DOB mismatch.
+> **Note:** `viz_mrz_crosscheck_valid` appears in `integrity_flags` as a convenience alias for `mrz_visual_dob_match` but is **not scored independently** — doing so would double-count the same DOB mismatch. It is present in the response for API consumer convenience only.
 
-| Tier | Condition |
-|---|---|
-| `PASSED` / `HIGH` | Score ≥ 85 and no critical failures |
-| `REVIEW_REQUIRED` / `MEDIUM` or `LOW` | Score 60–84, or any medium failure without critical, or visual DOB missing |
-| `FAILED` / `REJECT` | Any critical failure or score < 60 |
+> **Note:** Several checks are skipped when the corresponding data is absent (e.g. `mrz_composite_check_valid` is skipped when MRZ line 2 is shorter than 44 characters; `mrz_visual_dob_match` is skipped when OCR could not read a visual DOB). A skipped check does not deduct points. Instead, when visual DOB is absent a `visual_dob_missing` synthetic failure is recorded (−8 pts) and `review_required` is set to `true`.
+
+| Tier | Score | Condition |
+|---|---|---|
+| `PASSED` / `HIGH` | ≥ 85 | No critical failures |
+| `REVIEW_REQUIRED` / `MEDIUM` | 70–84 | No critical failures, but at least one medium failure or visual DOB missing |
+| `REVIEW_REQUIRED` / `LOW` | 60–69 | No critical failures, score below 70 |
+| `FAILED` / `REJECT` | < 60, or any critical failure | — |
 
 ## Optional LLM Fallback
 
@@ -370,19 +375,21 @@ When `GROQ_API_KEY` is set, the worker runs the deterministic engine first and o
 
 The LLM receives the raw OCR text from both pages and is asked to return structured JSON. That output is normalised into the same OCR shape and fed back through `runValidation()`. The better result (by score, then by status rank) is used. The full trace — first pass, LLM action, second pass — is included in the response.
 
+The LLM is tried against a model pool (`llama-3.3-70b-versatile` → `llama-3.1-8b-instant`) with automatic failover on rate-limit errors (HTTP 429/403).
+
 Set `GROQ_FALLBACK_DISABLED=true` to disable the fallback without removing the API key.
 
 ## Security
 
 ### API Key Authentication
 
-Set `API_KEY` in your environment to require all clients to send `X-API-Key: <value>`. Requests without the correct key receive `401 Unauthorized`. Leave `API_KEY` unset to disable (default).
+Set `API_KEY` in your environment to require all clients to send `X-API-Key: <value>`. Requests without the correct key receive `401 Unauthorized`. Leave `API_KEY` unset to disable (default — **not recommended for production**).
 
 ### Rate Limiting
 
 An in-memory sliding-window rate limiter is applied per client IP. Defaults are 60 requests per 60-second window. Override with `RATE_LIMIT_WINDOW_MS` and `RATE_LIMIT_MAX`.
 
-> **Note:** The rate limiter is single-process in-memory. If you run multiple API replicas behind a load balancer, replace it with a Redis-backed implementation.
+> **Note:** The rate limiter is single-process in-memory. If you run multiple API replicas behind a load balancer, replace it with a Redis-backed implementation (e.g. `rate-limiter-flexible`).
 
 ## Batch Sample Runner
 
@@ -408,17 +415,18 @@ The script auto-detects `front`/`back` images inside each subfolder of `samples/
 npm test
 ```
 
-Current coverage (24 tests, all passing):
+Current coverage (58 tests, all passing):
 
 - MRZ checksum and composite check digit computation
 - MRZ line 1 and line 2 parsing and integrity checks
 - Visual DOB vs MRZ DOB matching (multiple date formats)
 - Temporal integrity (expiry, DOB plausibility)
 - Back-page integrity (file number, PIN, address)
-- Document consistency (visual vs MRZ passport number, RPO alignment)
+- Document consistency (visual vs MRZ passport number, MRZ optional data vs file number, RPO alignment)
 - Integrity scoring (PASSED / REVIEW_REQUIRED / FAILED tiers)
-- LLM fallback normalization, MRZ line selection, and fallback trace builder
+- LLM fallback normalization, MRZ line selection, JSON extraction, and fallback trace builder
 - Google Vision OCR normalization and MRZ extraction
+- Job processor (BullMQ job lifecycle, LLM path, temp-file cleanup)
 
 ## Logging
 
