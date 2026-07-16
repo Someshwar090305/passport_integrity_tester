@@ -179,8 +179,8 @@ export function normalizeLlmExtraction(raw) {
         line2: mrzLine2,
         line1: mrzLine1,
         passport_number: passportNumber,
-        date_of_birth_raw: raw?.date_of_birth_raw || null,
-        expiry_date_raw: raw?.expiry_date_raw || null
+        date_of_birth_raw: mrzLine2?.length >= 27 ? mrzLine2.slice(13, 19) : null,
+        expiry_date_raw: mrzLine2?.length >= 27 ? mrzLine2.slice(21, 27) : null
       }
     }
   };
