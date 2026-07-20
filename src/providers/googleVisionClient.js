@@ -40,11 +40,14 @@ function extractMrzLine2(text) {
     .map((line) => cleanMrzLine(line))
     .filter((line) => line.length >= 10);
 
+  // Primary: full-length (42–44 char) line with valid checksums.
   const mrzLines = lines.filter((line) => /^[A-Z0-9<]{42,44}$/.test(line));
   const validMrz = mrzLines.find((line) => validateMrzChecksums(line).valid);
   if (validMrz) return validMrz;
 
   const headerIndex = lines.findIndex((line) => line.startsWith('P<'));
+
+  // Fallback A: full-length line immediately after a P< header.
   if (headerIndex !== -1 && lines[headerIndex + 1]) {
     const candidate = cleanMrzLine(lines[headerIndex + 1]);
     if (/^[A-Z0-9<]{42,44}$/.test(candidate)) {
@@ -52,10 +55,25 @@ function extractMrzLine2(text) {
     }
   }
 
+  // Fallback B (truncated OCR): accept a shorter line (≥28 chars, all MRZ chars,
+  // not starting with P<) immediately after a P< header. OCR sometimes returns
+  // the numeric MRZ line truncated — e.g. 33 chars instead of 44.
+  // 28 is the minimum validateMrzChecksums needs to check passport/DOB/expiry.
+  // This must run BEFORE the 'first full-length line' fallback below, because
+  // the only full-length line available is often the alpha (P<) line itself.
+  if (headerIndex !== -1 && lines[headerIndex + 1]) {
+    const candidate = cleanMrzLine(lines[headerIndex + 1]);
+    if (/^[A-Z0-9<]{28,41}$/.test(candidate) && !candidate.startsWith('P<')) {
+      return candidate;
+    }
+  }
+
+  // Fallback C: first full-length matching line (may be the alpha line — last resort).
   if (mrzLines.length > 0) return mrzLines[0];
 
-  const candidates = Array.from(new Set(cleanMrzLine(text).match(/[A-Z0-9<]{42,44}/g) || []));
-  return candidates[0] || null;
+  // Fallback D: regex over the entire text, full-length lines only.
+  const fullCandidates = Array.from(new Set(cleanMrzLine(text).match(/[A-Z0-9<]{42,44}/g) || []));
+  return fullCandidates[0] || null;
 }
 
 function extractPassportNumber(text) {
@@ -219,27 +237,45 @@ function normalizeFrontPageText(text) {
   const mrzDob    = yyMmDdToIso(parsedMrz?.dateOfBirthRaw || '');
   const mrzExpiry = yyMmDdToIso(parsedMrz?.expiryDateRaw  || '');
 
-  const passportNumber = pick(mrzPassportNumber, extractPassportNumber(normalized));
-  const dob    = pick(mrzDob,    extractDateOfBirth(normalized));
-  const expiry = pick(mrzExpiry, extractExpiryDate(normalized));
-  const issueDate = extractIssueDate(normalized);
+  // ── Raw visual extraction (MRZ-free) ──────────────────────────────────────
+  // These values reflect only what OCR can read on the printed page.
+  // They are stored in front.visual_raw and used exclusively by
+  // mrzIntegrity.js for the visual↔MRZ cross-checks.
+  // IMPORTANT: never overwrite these with MRZ-derived data — doing so would
+  // make the cross-check compare MRZ against itself (circular validation).
+  const rawVisualPassportNumber = extractPassportNumber(normalized) || null;
+  const rawVisualDob    = extractDateOfBirth(normalized) || null;
+  const rawVisualExpiry = extractExpiryDate(normalized) || null;
+
+  // ── MRZ-assisted output values ─────────────────────────────────────────────
+  // For extracted_data we want the most accurate reading; MRZ wins when present.
+  const passportNumber = pick(mrzPassportNumber, rawVisualPassportNumber);
+  const dob    = pick(mrzDob,    rawVisualDob);
+  const expiry = pick(mrzExpiry, rawVisualExpiry);
+  const issueDate    = extractIssueDate(normalized);
   const placeOfIssue = extractPlaceOfIssue(normalized);
 
   return {
     front: {
       mrz_line1: mrzLine1,
       mrz_line2: mrzLine2,
-      date_of_birth: dob,
+      date_of_birth:   dob,
       passport_number: passportNumber,
-      expiry_date: expiry,
-      date_of_issue: issueDate,
-      place_of_issue: placeOfIssue
+      expiry_date:     expiry,
+      date_of_issue:   issueDate,
+      place_of_issue:  placeOfIssue,
+      // MRZ-free raw visual values — consumed by mrzIntegrity.js cross-checks.
+      visual_raw: {
+        passport_number: rawVisualPassportNumber,
+        date_of_birth:   rawVisualDob,
+        expiry_date:     rawVisualExpiry
+      }
     },
     passport_number: passportNumber,
-    date_of_birth: dob,
-    expiry_date: expiry,
-    date_of_issue: issueDate,
-    place_of_issue: placeOfIssue,
+    date_of_birth:   dob,
+    expiry_date:     expiry,
+    date_of_issue:   issueDate,
+    place_of_issue:  placeOfIssue,
     raw: { text: normalized }
   };
 }

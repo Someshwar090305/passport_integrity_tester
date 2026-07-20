@@ -30,8 +30,19 @@ export function selectValidationResult(primaryValidation, fallbackValidation) {
 }
 
 export function runValidation(ocr) {
-  const mrzLine1 = pick(ocr?.mrz?.line1, ocr?.front?.mrz_line1, ocr?.mrz_line1, '');
-  const mrzLine2 = pick(ocr?.mrz?.line2, ocr?.front?.mrz_line2, ocr?.mrz_line2, '');
+  let mrzLine1 = pick(ocr?.mrz?.line1, ocr?.front?.mrz_line1, ocr?.mrz_line1, '');
+  let mrzLine2 = pick(ocr?.mrz?.line2, ocr?.front?.mrz_line2, ocr?.mrz_line2, '');
+
+  // Guard: OCR engines sometimes return MRZ lines in the wrong slots.
+  // Line 1 (alpha line) always begins with 'P<'; Line 2 (numeric line) never does.
+  // This condition is impossible for a correctly-ordered pair, so the swap only
+  // fires when the OCR clearly handed us Line 1 content in the Line 2 slot.
+  const _l1 = String(mrzLine1).replace(/[^A-Z0-9<]/gi, '').toUpperCase();
+  const _l2 = String(mrzLine2).replace(/[^A-Z0-9<]/gi, '').toUpperCase();
+  if (_l2.startsWith('P<') && !_l1.startsWith('P<')) {
+    [mrzLine1, mrzLine2] = [mrzLine2, mrzLine1];
+  }
+
   const parsedMrz = parseMrzLine2(mrzLine2);
   const mrzResult = validateMrzChecksums(mrzLine2);
 
@@ -116,9 +127,11 @@ export function runValidation(ocr) {
         composite_check_applicable: mrzIntegrity.mrz_composite_check_applicable
       },
       visual: {
-        date_of_birth_raw: pick(ocr?.front?.date_of_birth, ocr?.date_of_birth, null),
-        passport_number_raw: pick(ocr?.front?.passport_number, ocr?.passport_number, null),
-        expiry_date_raw: pick(ocr?.front?.expiry_date, ocr?.expiry_date, null)
+        // Raw visual values — what OCR read from the printed page, without any
+        // MRZ correction. Null means OCR could not read the field.
+        date_of_birth_raw:    pick(ocr?.front?.visual_raw?.date_of_birth,   ocr?.front?.date_of_birth,   ocr?.date_of_birth,   null),
+        passport_number_raw:  pick(ocr?.front?.visual_raw?.passport_number, ocr?.front?.passport_number, ocr?.passport_number, null),
+        expiry_date_raw:      pick(ocr?.front?.visual_raw?.expiry_date,      ocr?.front?.expiry_date,      ocr?.expiry_date,      null)
       },
       back_page: {
         file_number_raw: fileNumber || null,

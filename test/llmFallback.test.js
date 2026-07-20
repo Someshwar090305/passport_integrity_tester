@@ -9,9 +9,9 @@ import {
   extractJsonFromText
 } from '../src/services/llmFallback.js';
 
-test('shouldUseLlmFallback returns false when no API key is configured', () => {
-  const previousKey = process.env.GROQ_API_KEY;
-  delete process.env.GROQ_API_KEY;
+test('shouldUseLlmFallback returns false when no project is configured', () => {
+  const previousProject = process.env.GOOGLE_CLOUD_PROJECT;
+  delete process.env.GOOGLE_CLOUD_PROJECT;
 
   try {
     const result = shouldUseLlmFallback(
@@ -27,8 +27,8 @@ test('shouldUseLlmFallback returns false when no API key is configured', () => {
 
     assert.equal(result, false);
   } finally {
-    if (previousKey) {
-      process.env.GROQ_API_KEY = previousKey;
+    if (previousProject) {
+      process.env.GOOGLE_CLOUD_PROJECT = previousProject;
     }
   }
 });
@@ -132,14 +132,14 @@ test('buildFallbackTrace records the first-pass failure and the LLM field update
   assert.equal(trace.llm_action.fields_updated.mrz_line2.changed, true);
 });
 
-// ── C2: GROQ_FALLBACK_DISABLED guard ─────────────────────────────────────────
+// ── C2: LLM_FALLBACK_DISABLED guard ───────────────────────────────────────────────
 
-test('C2: shouldUseLlmFallback returns false when GROQ_FALLBACK_DISABLED=true', () => {
-  const previousKey = process.env.GROQ_API_KEY;
-  const previousDisabled = process.env.GROQ_FALLBACK_DISABLED;
+test('C2: shouldUseLlmFallback returns false when LLM_FALLBACK_DISABLED=true', () => {
+  const previousProject  = process.env.GOOGLE_CLOUD_PROJECT;
+  const previousDisabled = process.env.LLM_FALLBACK_DISABLED;
 
-  process.env.GROQ_API_KEY = 'test-key';
-  process.env.GROQ_FALLBACK_DISABLED = 'true';
+  process.env.GOOGLE_CLOUD_PROJECT  = 'test-project';
+  process.env.LLM_FALLBACK_DISABLED = 'true';
 
   try {
     const result = shouldUseLlmFallback(
@@ -147,21 +147,21 @@ test('C2: shouldUseLlmFallback returns false when GROQ_FALLBACK_DISABLED=true', 
       { verificationStatus: 'FAILED', extractedData: {} }
     );
     assert.equal(result, false,
-      'should return false when GROQ_FALLBACK_DISABLED=true even with an API key');
+      'should return false when LLM_FALLBACK_DISABLED=true even with a project set');
   } finally {
-    if (previousKey !== undefined) process.env.GROQ_API_KEY = previousKey;
-    else delete process.env.GROQ_API_KEY;
-    if (previousDisabled !== undefined) process.env.GROQ_FALLBACK_DISABLED = previousDisabled;
-    else delete process.env.GROQ_FALLBACK_DISABLED;
+    if (previousProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = previousProject;
+    else delete process.env.GOOGLE_CLOUD_PROJECT;
+    if (previousDisabled !== undefined) process.env.LLM_FALLBACK_DISABLED = previousDisabled;
+    else delete process.env.LLM_FALLBACK_DISABLED;
   }
 });
 
-test('C2: shouldUseLlmFallback returns true when GROQ_FALLBACK_DISABLED is unset', () => {
-  const previousKey = process.env.GROQ_API_KEY;
-  const previousDisabled = process.env.GROQ_FALLBACK_DISABLED;
+test('C2: shouldUseLlmFallback returns true when LLM_FALLBACK_DISABLED is unset', () => {
+  const previousProject  = process.env.GOOGLE_CLOUD_PROJECT;
+  const previousDisabled = process.env.LLM_FALLBACK_DISABLED;
 
-  process.env.GROQ_API_KEY = 'test-key';
-  delete process.env.GROQ_FALLBACK_DISABLED;
+  process.env.GOOGLE_CLOUD_PROJECT = 'test-project';
+  delete process.env.LLM_FALLBACK_DISABLED;
 
   try {
     const result = shouldUseLlmFallback(
@@ -171,9 +171,67 @@ test('C2: shouldUseLlmFallback returns true when GROQ_FALLBACK_DISABLED is unset
     assert.equal(result, true,
       'should return true when disabled flag is absent and conditions are met');
   } finally {
-    if (previousKey !== undefined) process.env.GROQ_API_KEY = previousKey;
-    else delete process.env.GROQ_API_KEY;
-    if (previousDisabled !== undefined) process.env.GROQ_FALLBACK_DISABLED = previousDisabled;
+    if (previousProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = previousProject;
+    else delete process.env.GOOGLE_CLOUD_PROJECT;
+    if (previousDisabled !== undefined) process.env.LLM_FALLBACK_DISABLED = previousDisabled;
+  }
+});
+
+// ── C2b: expired-passport LLM skip optimisation ───────────────────────────────
+
+test('C2b: shouldUseLlmFallback returns false when the only failure is an expired passport with complete data', () => {
+  const previousProject = process.env.GOOGLE_CLOUD_PROJECT;
+  process.env.GOOGLE_CLOUD_PROJECT = 'test-project';
+
+  try {
+    const result = shouldUseLlmFallback(
+      { raw: { google_vision: { front: 'some text', back: 'some text' } } },
+      {
+        verificationStatus: 'FAILED',
+        extractedData: {
+          passport_number: 'K0037575',
+          date_of_birth: '1977-06-10',
+          expiry_date: '2021-12-08'
+        },
+        failedChecks: [
+          { code: 'document_not_expired', severity: 'critical', message: 'Passport is expired' }
+        ]
+      }
+    );
+    assert.equal(result, false,
+      'LLM must not run when passport is expired but all data fields were extracted');
+  } finally {
+    if (previousProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = previousProject;
+    else delete process.env.GOOGLE_CLOUD_PROJECT;
+  }
+});
+
+test('C2b: shouldUseLlmFallback returns true when passport is expired AND data is incomplete', () => {
+  const previousProject = process.env.GOOGLE_CLOUD_PROJECT;
+  process.env.GOOGLE_CLOUD_PROJECT = 'test-project';
+
+  try {
+    // Expired passport but MRZ was also broken — data extraction failed too.
+    // LLM should still run to try to recover the missing fields.
+    const result = shouldUseLlmFallback(
+      { raw: { google_vision: { front: 'some text', back: '' } } },
+      {
+        verificationStatus: 'FAILED',
+        extractedData: {
+          passport_number: null,
+          date_of_birth: null,
+          expiry_date: '2021-12-08'
+        },
+        failedChecks: [
+          { code: 'document_not_expired', severity: 'critical', message: 'Passport is expired' }
+        ]
+      }
+    );
+    assert.equal(result, true,
+      'LLM must still run when passport is expired but key data fields are missing');
+  } finally {
+    if (previousProject !== undefined) process.env.GOOGLE_CLOUD_PROJECT = previousProject;
+    else delete process.env.GOOGLE_CLOUD_PROJECT;
   }
 });
 

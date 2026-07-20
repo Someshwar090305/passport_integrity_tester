@@ -1,11 +1,32 @@
 import 'dotenv/config';
+import { VertexAI } from '@google-cloud/vertexai';
 import { pick, cleanMrzLine, normalizeDateString } from '../utils/helpers.js';
 
+// Primary model: fast and cheap. Fallback: more capable, separate quota pool.
+// gemini-1.5 and gemini-2.0 were retired on Vertex AI June 1 2026.
+// Override the primary model via VERTEX_AI_MODEL env var.
 const MODEL_POOL = [
-  process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant'
+  process.env.VERTEX_AI_MODEL || 'gemini-2.5-flash',
+  'gemini-2.5-pro'
 ];
-const RATE_LIMIT_ERROR_CODES = new Set([429, 403]);
+
+// HTTP status codes that indicate a transient quota/rate-limit condition
+// and warrant retrying with the next model in the pool.
+const RATE_LIMIT_STATUS_CODES = new Set([429, 403]);
+
+// Lazily-initialised Vertex AI client — reuses the same Google service-account
+// credentials already required for Cloud Vision (GOOGLE_APPLICATION_CREDENTIALS).
+// Default region is us-central1; override with VERTEX_AI_LOCATION.
+let _vertexClient = null;
+function getVertexClient() {
+  if (!_vertexClient) {
+    _vertexClient = new VertexAI({
+      project:  process.env.GOOGLE_CLOUD_PROJECT,
+      location: process.env.VERTEX_AI_LOCATION || 'us-central1'
+    });
+  }
+  return _vertexClient;
+}
 
 function isLikelyMrzLine2(raw) {
   const normalized = cleanMrzLine(raw);
@@ -49,14 +70,16 @@ export function extractJsonFromText(text) {
 }
 
 export function shouldUseLlmFallback(ocrResult, validationResult) {
-  if (!process.env.GROQ_API_KEY) {
+  // Vertex AI uses the same GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_CLOUD_PROJECT
+  // already required for Cloud Vision. No separate API key is needed.
+  if (!process.env.GOOGLE_CLOUD_PROJECT) {
     return false;
   }
 
   // Respect the explicit opt-out flag. Checked here (not inside runLlmFallback)
   // so the worker never enters the fallback branch and no misleading
   // "Triggering LLM fallback" log is emitted when the feature is disabled.
-  if (process.env.GROQ_FALLBACK_DISABLED === 'true') {
+  if (process.env.LLM_FALLBACK_DISABLED === 'true') {
     return false;
   }
 
@@ -69,6 +92,30 @@ export function shouldUseLlmFallback(ocrResult, validationResult) {
     !validationResult?.extractedData?.passport_number ||
     !validationResult?.extractedData?.date_of_birth ||
     !validationResult?.extractedData?.expiry_date;
+
+  // Optimisation: skip the LLM when the passport is simply expired but data
+  // extraction succeeded. The LLM cannot un-expire a document, and calling
+  // Gemini just to confirm nothing changed wastes time and quota.
+  // Condition: the ONLY critical failure is document_not_expired AND all three
+  // key fields were successfully extracted in the first pass.
+  if (engineLooksWeak) {
+    const criticalFailures = (validationResult?.failedChecks || [])
+      .filter(c => c.severity === 'critical')
+      .map(c => c.code);
+
+    const onlyExpired =
+      criticalFailures.length === 1 &&
+      criticalFailures[0] === 'document_not_expired';
+
+    const dataComplete =
+      Boolean(validationResult?.extractedData?.passport_number) &&
+      Boolean(validationResult?.extractedData?.date_of_birth) &&
+      Boolean(validationResult?.extractedData?.expiry_date);
+
+    if (onlyExpired && dataComplete) {
+      return false;
+    }
+  }
 
   return hasRequiredText && engineLooksWeak;
 }
@@ -187,12 +234,11 @@ export function normalizeLlmExtraction(raw) {
 }
 
 export async function runLlmFallback(ocrResult) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
+  if (!process.env.GOOGLE_CLOUD_PROJECT) {
     return null;
   }
 
-  if (process.env.GROQ_FALLBACK_DISABLED === 'true') {
+  if (process.env.LLM_FALLBACK_DISABLED === 'true') {
     return {
       status: 'disabled',
       message: 'LLM fallback disabled by configuration'
@@ -210,7 +256,7 @@ export async function runLlmFallback(ocrResult) {
     '  "given_names": "string|null",',
     '  "date_of_birth": "YYYY-MM-DD|null",',
     '  "expiry_date": "YYYY-MM-DD|null",',
-    '  "country": "string|null",',
+    '  "country": "3-letter ISO code|null",',
     '  "file_number": "string|null",',
     '  "address": "string|null",',
     '  "mrz_line1": "string|null",',
@@ -225,85 +271,82 @@ export async function runLlmFallback(ocrResult) {
     ocrResult?.raw?.google_vision?.back || ''
   ].join('\n');
 
-  try {
-    let lastError = null;
+  let lastError = null;
 
-    for (const modelName of MODEL_POOL) {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: modelName,
+  for (const modelName of MODEL_POOL) {
+    try {
+      const model = getVertexClient().getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          // Force structured JSON output — Gemini will not wrap in markdown or prose.
+          responseMimeType: 'application/json',
           temperature: 0.1,
-          response_format: { type: 'json_object' },
-          messages: [
-            {
-              role: 'system',
-              content: 'You extract passport fields from OCR text and return only valid JSON.'
-            },
-            {
-              role: 'user',
-              content: prompt
-            }
-          ]
-        })
+          maxOutputTokens: 1024,
+          // Disable thinking mode: gemini-2.5+ thinks by default, which adds
+          // latency, cost, and returns a 'thought' part before the JSON text.
+          // Structured extraction does not benefit from chain-of-thought.
+          thinkingConfig: { thinkingBudget: 0 }
+        }
       });
 
-      if (response.ok) {
-        const payload = await response.json();
-        const rawText = payload?.choices?.[0]?.message?.content || '';
+      const response = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      });
 
-        if (!rawText) {
-          return {
-            status: 'error',
-            message: 'LLM response did not include any text content'
-          };
-        }
+      // gemini-2.5+ may return a 'thinking' part (thought: true) before the
+      // actual JSON part. Skip any thought parts and take the first real text.
+      const parts = response?.response?.candidates?.[0]?.content?.parts ?? [];
+      const textPart = parts.find(p => !p.thought && typeof p.text === 'string')
+        ?? parts[0];
+      const rawText = textPart?.text || '';
 
-        const extracted = extractJsonFromText(rawText);
-
-        if (!extracted) {
-          return {
-            status: 'error',
-            message: 'LLM response could not be parsed as JSON',
-            model: modelName
-          };
-        }
-
-        const normalized = normalizeLlmExtraction(extracted);
-
+      if (!rawText) {
         return {
-          status: 'success',
-          extracted: normalized,
-          raw: payload,
+          status: 'error',
+          message: 'Vertex AI response contained no text content',
           model: modelName
         };
       }
 
-      const errorText = await response.text();
-      lastError = {
-        status: 'error',
-        message: `LLM request failed: ${response.status} ${errorText}`,
-        retryable: RATE_LIMIT_ERROR_CODES.has(response.status),
+      const extracted = extractJsonFromText(rawText);
+
+      if (!extracted) {
+        return {
+          status: 'error',
+          message: 'Vertex AI response could not be parsed as JSON',
+          model: modelName
+        };
+      }
+
+      const normalized = normalizeLlmExtraction(extracted);
+
+      return {
+        status: 'success',
+        extracted: normalized,
         model: modelName
       };
 
-      if (!RATE_LIMIT_ERROR_CODES.has(response.status)) {
+    } catch (error) {
+      const statusCode = error?.statusDetails?.httpStatus || error?.status;
+      const isRateLimit = RATE_LIMIT_STATUS_CODES.has(statusCode);
+
+      lastError = {
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        retryable: isRateLimit,
+        model: modelName
+      };
+
+      // Only advance to the next model in the pool for rate-limit errors.
+      // Any other error (auth, model not found, etc.) is terminal.
+      if (!isRateLimit) {
         break;
       }
     }
-
-    return lastError || {
-      status: 'error',
-      message: 'LLM fallback failed without a response'
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      message: error instanceof Error ? error.message : 'Unknown LLM error'
-    };
   }
+
+  return lastError || {
+    status: 'error',
+    message: 'LLM fallback failed without a response'
+  };
 }

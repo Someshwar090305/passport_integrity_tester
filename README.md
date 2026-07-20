@@ -1,6 +1,6 @@
 # Passport Validator
 
-A Node.js service for validating Indian passport images by combining OCR, a layered deterministic integrity pipeline, and an optional Groq-backed LLM fallback. The API accepts front/back passport images, queues verification jobs asynchronously via BullMQ + Redis, and returns structured results including an integrity score, tier, and full fallback trace.
+A Node.js service for validating Indian passport images by combining OCR, a layered deterministic integrity pipeline, and an optional Vertex AI (Gemini 2.5 Flash) LLM fallback. The API accepts front/back passport images, queues verification jobs asynchronously via BullMQ + Redis, and returns structured results including an integrity score, tier, and full fallback trace.
 
 ## What the Service Does
 
@@ -11,7 +11,8 @@ A Node.js service for validating Indian passport images by combining OCR, a laye
   - Front page: extracts MRZ lines, passport number, DOB, expiry, date of issue, and place of issue
   - Back page: extracts file number, address, and barcode-adjacent passport number (no MRZ extraction — prevents false positives)
 - Runs a 5-layer deterministic integrity pipeline and computes a weighted score
-- Optionally invokes a Groq LLM fallback when the first pass is weak, then re-validates with the corrected data
+- Optionally invokes a Vertex AI (Gemini 2.5 Flash) LLM fallback when the first pass is weak, then re-validates with the corrected data
+- **Skips the LLM** when the only failure is an expired passport and all data fields were already successfully extracted — the LLM cannot un-expire a document
 - Returns `202 Accepted` immediately; poll `GET /api/v1/jobs/:jobId` for results
 - Emits structured JSON logs to stdout/stderr (filterable by `LOG_LEVEL`)
 
@@ -21,6 +22,7 @@ A Node.js service for validating Indian passport images by combining OCR, a laye
 - Express 5
 - BullMQ + Redis (ioredis)
 - Google Cloud Vision (`@google-cloud/vision`)
+- Google Vertex AI (`@google-cloud/vertexai`) — Gemini 2.5 Flash LLM fallback
 - Multer
 - dotenv
 - ulid
@@ -41,7 +43,7 @@ src/
   services/
     validationEngine.js     — Orchestrates all validators, builds integrity flags
     integrityScoring.js     — Weighted scoring, tier assignment
-    llmFallback.js          — Groq fallback trigger, normalization, trace builder
+    llmFallback.js          — Vertex AI fallback trigger, normalization, trace builder
   utils/
     helpers.js              — Shared utilities: pick, yyMmDdToIso, cleanMrzLine, normalizeDateString
     logger.js               — Structured JSON logger (respects LOG_LEVEL)
@@ -75,8 +77,10 @@ test/
 
 - Node.js 18+
 - Redis server running locally or remotely
-- Google Cloud service account JSON with Vision API access
+- Google Cloud service account JSON with **Cloud Vision API** and **Vertex AI API** access
 - `GOOGLE_APPLICATION_CREDENTIALS` pointing to the credentials file
+- `GOOGLE_CLOUD_PROJECT` set to your GCP project ID
+- Vertex AI API enabled in your project: `gcloud services enable aiplatform.googleapis.com`
 
 ## Installation
 
@@ -91,12 +95,20 @@ Copy `.env.example` to `.env` and fill in your values.
 ```env
 PORT=3000
 REDIS_URL=redis://127.0.0.1:6379
+
+# Google Cloud credentials — used by both Cloud Vision (OCR) and Vertex AI (LLM fallback).
+# Point this to your service account JSON key file.
 GOOGLE_APPLICATION_CREDENTIALS=./credentials/your-service-account.json
 
-# Optional: Groq LLM fallback
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
-GROQ_FALLBACK_DISABLED=false
+# The GCP project ID that hosts your Cloud Vision and Vertex AI services.
+GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+
+# Vertex AI region — Gemini 2.5 models are available in us-central1.
+# Override only if you have confirmed access to another region.
+VERTEX_AI_LOCATION=us-central1
+
+# Override the primary Gemini model (default: gemini-2.5-flash).
+# VERTEX_AI_MODEL=gemini-2.5-flash
 
 # Optional: API key authentication
 # When set, all requests must include X-API-Key: <value> header.
@@ -113,6 +125,9 @@ UPLOAD_TEMP_DIR=
 
 # Optional: log verbosity — debug | info | warn | error (default: info)
 LOG_LEVEL=info
+
+# Optional: disable LLM fallback without removing credentials
+LLM_FALLBACK_DISABLED=false
 ```
 
 ## Running the Service
@@ -248,7 +263,7 @@ Poll until the job finishes.
   },
   "extracted_features": {
     "mrz": {
-      "line1": "P<INDSMITH<<JOHN<<<<<<<<<<<<<<<<<<<<<<<<<<<",
+      "line1": "P<INDSMITH<<JOHN<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<",
       "line2": "A12345670IND9001011M3001011<<<<<<<<<<<<<<<6",
       "passport_number": "A1234567",
       "nationality": "IND",
@@ -306,7 +321,7 @@ When the first pass fails or yields incomplete data, the response includes a `fa
     },
     "llm_action": {
       "status": "success",
-      "model": "llama-3.3-70b-versatile",
+      "model": "gemini-2.5-flash",
       "fields_updated": {
         "passport_number": { "before": null, "after": "A1234567", "changed": true },
         "mrz_line2": { "before": null, "after": "A12345670IND...", "changed": true }
@@ -366,18 +381,46 @@ Each check carries a weight. Failing a check deducts that weight from a starting
 | `REVIEW_REQUIRED` / `LOW` | 60–69 | No critical failures, score below 70 |
 | `FAILED` / `REJECT` | < 60, or any critical failure | — |
 
+## Visual ↔ MRZ Cross-check Integrity
+
+The `mrz_visual_passport_match`, `mrz_visual_dob_match`, and `mrz_visual_expiry_match` checks compare what OCR reads visually from the printed page against the machine-readable zone (MRZ).
+
+The OCR normalizer produces two separate data paths:
+
+| Path | Field | Used for |
+|---|---|---|
+| `front.visual_raw.*` | What OCR read from the printed visual fields only — never overwritten by MRZ data | Cross-checks (`mrz_visual_*_match`) |
+| `front.*` / `extracted_data.*` | MRZ-assisted (MRZ wins when present, visual is fallback) | Output / extracted data |
+
+This split means that obscured or tampered visual fields genuinely fail the cross-check even when the MRZ remains intact. For example:
+
+- A hidden passport number prefix → `mrz_visual_passport_match: false` → −15 pts (critical)
+- An unreadable DOB → `visual_dob_missing` → −8 pts + `review_required: true`
+
+The `extracted_features.visual` section in the response shows raw visual values, making it transparent exactly what OCR saw on the printed page vs what the MRZ says.
+
+## MRZ Robustness
+
+The pipeline handles several real-world OCR failure modes automatically:
+
+| Failure | Detection | Recovery |
+|---|---|---|
+| OCR returns MRZ lines in swapped slots | Line 2 starts with `P<` and Line 1 does not — physically impossible for a correct pair | Lines are swapped before parsing |
+| OCR truncates MRZ Line 2 (< 42 chars) | Detected as a ≥ 28-char alphanumeric/`<` string immediately after a `P<` line | Accepted as Line 2; checksums still validated on available fields |
+| Garbled nationality field (`Y`, `1IN`, `<<<`) | Value does not match `/^[A-Z]{3}$/` | Treated as unreadable (not as a confirmed foreign nationality); no country penalty |
+
 ## Optional LLM Fallback
 
-When `GROQ_API_KEY` is set, the worker runs the deterministic engine first and only calls the LLM when:
+When `GOOGLE_CLOUD_PROJECT` is set, the worker runs the deterministic engine first and only calls Gemini when:
 
 - The OCR raw text from at least one page is available, **and**
 - The first-pass result is `FAILED`, **or** passport number / DOB / expiry are missing
 
-The LLM receives the raw OCR text from both pages and is asked to return structured JSON. That output is normalised into the same OCR shape and fed back through `runValidation()`. The better result (by score, then by status rank) is used. The full trace — first pass, LLM action, second pass — is included in the response.
+**The LLM is skipped** when the first pass failed *only* because the passport is expired and all three key fields (passport number, DOB, expiry) were successfully extracted. An expired document has perfectly readable data; the LLM cannot change the expiry date.
 
-The LLM is tried against a model pool (`llama-3.3-70b-versatile` → `llama-3.1-8b-instant`) with automatic failover on rate-limit errors (HTTP 429/403).
+The LLM receives the raw OCR text from both pages and returns structured JSON. That output is normalised into the same OCR shape and fed back through `runValidation()`. The better result (by score, then by status rank) is used. The full trace — first pass, LLM action, second pass — is included in the response.
 
-Set `GROQ_FALLBACK_DISABLED=true` to disable the fallback without removing the API key.
+Set `LLM_FALLBACK_DISABLED=true` to disable the fallback without removing credentials.
 
 ## Security
 
@@ -415,17 +458,22 @@ The script auto-detects `front`/`back` images inside each subfolder of `samples/
 npm test
 ```
 
-Current coverage (58 tests, all passing):
+Current coverage (65 tests, all passing):
 
 - MRZ checksum and composite check digit computation
 - MRZ line 1 and line 2 parsing and integrity checks
+- MRZ line swap auto-detection and correction
+- Truncated MRZ Line 2 extraction (< 42 chars from OCR)
+- Garbled OCR nationality guard (no false country failures)
+- Visual ↔ MRZ cross-check with `visual_raw` isolation (tampered field detection)
 - Visual DOB vs MRZ DOB matching (multiple date formats)
 - Temporal integrity (expiry, DOB plausibility)
 - Back-page integrity (file number, PIN, address)
 - Document consistency (visual vs MRZ passport number, MRZ optional data vs file number, RPO alignment)
 - Integrity scoring (PASSED / REVIEW_REQUIRED / FAILED tiers)
-- LLM fallback normalization, MRZ line selection, JSON extraction, and fallback trace builder
-- Google Vision OCR normalization and MRZ extraction
+- LLM fallback normalization, MRZ line selection, JSON extraction, fallback trace builder
+- LLM skip when only failure is expired passport with complete data
+- Google Vision OCR normalization, MRZ extraction, and `visual_raw` split
 - Job processor (BullMQ job lifecycle, LLM path, temp-file cleanup)
 
 ## Logging
@@ -433,7 +481,7 @@ Current coverage (58 tests, all passing):
 The service emits structured JSON to stdout (info/warn/debug) and stderr (error). Each line is a JSON object:
 
 ```json
-{"time":"2026-06-26T08:00:00.000Z","level":"info","msg":"Job completed","job_id":"job_01ABC...","verification_status":"PASSED","integrity_score":92,"llm_used":false}
+{"time":"2026-07-20T08:00:00.000Z","level":"info","msg":"Job completed","job_id":"job_01ABC...","verification_status":"PASSED","integrity_score":100,"llm_used":false}
 ```
 
 Set `LOG_LEVEL=debug` to see all log lines including per-field details.
