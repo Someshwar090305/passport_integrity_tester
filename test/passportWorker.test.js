@@ -42,6 +42,14 @@ const MOCK_OCR_RESULT = {
   raw: { google_vision: { front: 'front ocr text', back: 'back ocr text' } }
 };
 
+const MOCK_QUALITY_OK = {
+  acceptable: true,
+  front: { acceptable: true, issues: [], metrics: {} },
+  back: { acceptable: true, issues: [], metrics: {} },
+  user_message: null,
+  issue_details: []
+};
+
 const MOCK_VALIDATION = {
   verificationStatus: 'PASSED',
   integrityScore:     95,
@@ -103,6 +111,7 @@ function makeDeps(overrides = {}) {
     shouldUseLlmFallbackFn:   ()                => false,
     runLlmFallbackFn:         async ()          => null,
     buildFallbackTraceFn:     ()                => null,
+    assessOcrImageQualityFn:  ()                => ({ ...MOCK_QUALITY_OK }),
     ...overrides
   };
 }
@@ -294,6 +303,53 @@ test('processPassportJob prefers second-pass result when it scores higher', asyn
   assert.strictEqual(result.verification_status, 'PASSED');
   assert.strictEqual(result.integrity_score,     90);
   assert.strictEqual(runValidationCallCount,     2, 'runValidation should run twice (first + second pass)');
+});
+
+test('processPassportJob returns REUPLOAD_REQUIRED when OCR image quality is insufficient', async () => {
+  let validationCalled = false;
+  let llmCalled = false;
+
+  const deps = makeDeps({
+    assessOcrImageQualityFn: () => ({
+      acceptable: false,
+      front: {
+        acceptable: false,
+        issues: ['FRONT_MRZ_UNREADABLE'],
+        metrics: { char_count: 12, extraction_strong: false }
+      },
+      back: {
+        acceptable: true,
+        issues: [],
+        metrics: { char_count: 120, extraction_strong: true }
+      },
+      user_message: 'Front image needs to be retaken. The MRZ strip at the bottom of the front page is not readable. Flatten the passport and avoid covering that area.',
+      issue_details: [
+        {
+          code: 'FRONT_MRZ_UNREADABLE',
+          message: 'The MRZ strip at the bottom of the front page is not readable. Flatten the passport and avoid covering that area.'
+        }
+      ]
+    }),
+    runValidationFn: () => { validationCalled = true; return MOCK_VALIDATION; },
+    shouldUseLlmFallbackFn: () => true,
+    runLlmFallbackFn: async () => { llmCalled = true; return null; }
+  });
+
+  const result = await processPassportJob(makeJob(), deps);
+
+  assert.strictEqual(result.verification_status, 'REUPLOAD_REQUIRED');
+  assert.strictEqual(result.integrity_score, null);
+  assert.strictEqual(result.extracted_data, null);
+  assert.ok(result.image_quality);
+  assert.match(result.user_message, /Front image needs to be retaken/i);
+  assert.strictEqual(result.processing_metrics.internal_validation_ms, 0);
+  assert.strictEqual(validationCalled, false);
+  assert.strictEqual(llmCalled, false);
+  assert.deepStrictEqual(result.extracted_features.llm_fallback, {
+    used: false,
+    reason: 'skipped_due_to_image_quality',
+    retryable: false
+  });
 });
 
 // ── cleanupTempFiles ──────────────────────────────────────────────────────────

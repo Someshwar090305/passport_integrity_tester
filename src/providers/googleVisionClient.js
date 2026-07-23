@@ -1,6 +1,7 @@
 import vision from '@google-cloud/vision';
 import { parseMrzLine2, validateMrzChecksums } from '../validators/mrzChecksum.js';
 import { pick, yyMmDdToIso, cleanMrzLine, normalizeDateString } from '../utils/helpers.js';
+import { extractVisionTextMetrics } from '../services/imageQuality.js';
 
 const credentialPath =
   process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_KEYFILE_JSON;
@@ -33,6 +34,27 @@ function extractMrzLine1(text) {
   return match?.[0]?.slice(0, 44) || null;
 }
 
+function looksLikeMrzLine2(line) {
+  const normalized = cleanMrzLine(line);
+  if (normalized.length < 28 || normalized.startsWith('P<')) return false;
+
+  const passportCheck = normalized[9];
+  const nationality = normalized.slice(10, 13);
+  const dob = normalized.slice(13, 19);
+  const dobCheck = normalized[19];
+  const expiry = normalized.slice(21, 27);
+  const expiryCheck = normalized[27];
+
+  return (
+    /^[0-9]$/.test(passportCheck) &&
+    /^[A-Z]{3}$/.test(nationality) &&
+    /^[0-9]{6}$/.test(dob) &&
+    /^[0-9]$/.test(dobCheck) &&
+    /^[0-9]{6}$/.test(expiry) &&
+    /^[0-9]$/.test(expiryCheck)
+  );
+}
+
 function extractMrzLine2(text) {
   if (!text) return null;
   const lines = String(text)
@@ -50,7 +72,7 @@ function extractMrzLine2(text) {
   // Fallback A: full-length line immediately after a P< header.
   if (headerIndex !== -1 && lines[headerIndex + 1]) {
     const candidate = cleanMrzLine(lines[headerIndex + 1]);
-    if (/^[A-Z0-9<]{42,44}$/.test(candidate)) {
+    if (/^[A-Z0-9<]{42,44}$/.test(candidate) && looksLikeMrzLine2(candidate)) {
       return candidate;
     }
   }
@@ -63,17 +85,17 @@ function extractMrzLine2(text) {
   // the only full-length line available is often the alpha (P<) line itself.
   if (headerIndex !== -1 && lines[headerIndex + 1]) {
     const candidate = cleanMrzLine(lines[headerIndex + 1]);
-    if (/^[A-Z0-9<]{28,41}$/.test(candidate) && !candidate.startsWith('P<')) {
+    if (/^[A-Z0-9<]{28,41}$/.test(candidate) && !candidate.startsWith('P<') && looksLikeMrzLine2(candidate)) {
       return candidate;
     }
   }
 
-  // Fallback C: first full-length matching line (may be the alpha line — last resort).
-  if (mrzLines.length > 0) return mrzLines[0];
+  // Fallback C: prefer a full-length numeric MRZ line and never return the alpha line
+  // as line 2. If no numeric line is found, treat the front as missing line 2.
+  const numericMrzLines = mrzLines.filter((line) => !line.startsWith('P<') && looksLikeMrzLine2(line));
+  if (numericMrzLines.length > 0) return numericMrzLines[0];
 
-  // Fallback D: regex over the entire text, full-length lines only.
-  const fullCandidates = Array.from(new Set(cleanMrzLine(text).match(/[A-Z0-9<]{42,44}/g) || []));
-  return fullCandidates[0] || null;
+  return null;
 }
 
 function extractPassportNumber(text) {
@@ -84,23 +106,59 @@ function extractPassportNumber(text) {
   return match?.[1] || null;
 }
 
+function findDateNearLabel(text, labelRegex) {
+  const datePattern = /([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})/;
+  const lines = String(text).split(/\r?\n/).map((line) => line.trim());
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!labelRegex.test(line)) continue;
+
+    const ownMatch = line.match(datePattern)?.[1];
+    if (ownMatch) return normalizeDateString(ownMatch);
+
+    for (let offset = 1; offset <= 2; offset += 1) {
+      const nextMatch = lines[i + offset]?.match(datePattern)?.[1];
+      if (nextMatch) return normalizeDateString(nextMatch);
+      const prevMatch = lines[i - offset]?.match(datePattern)?.[1];
+      if (prevMatch) return normalizeDateString(prevMatch);
+    }
+  }
+
+  return null;
+}
+
 function extractDateOfBirth(text) {
   if (!text) return null;
+
   const match =
     text.match(/\bDate\s*of\s*Birth\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
     text.match(/\bDOB\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
-    text.match(/\bजन्मतिथि\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i);
-  return normalizeDateString(match?.[1] || null);
+    text.match(/\bजन्मतिथि\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
+    text.match(/\bdayate\s*of\s*Birth\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i);
+
+  if (match) {
+    return normalizeDateString(match[1]);
+  }
+
+  return findDateNearLabel(text, /\b(date\s*of\s*birt\w*|dob|जन्मतिथि|birt|birth)\b/i);
 }
 
 function extractExpiryDate(text) {
   if (!text) return null;
+
   const match =
     text.match(/\bDate\s*of\s*Expiry\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
+    text.match(/\bOate\s*of\s*Expiry\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
     text.match(/\bExpiry\s*Date\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
     text.match(/\bValid\s*Until\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i) ||
     text.match(/\bEXP\s*[:\-]?\s*([0-3]?\d[\/\-][01]?\d[\/\-]\d{4})\b/i);
-  return normalizeDateString(match?.[1] || null);
+
+  if (match) {
+    return normalizeDateString(match[1]);
+  }
+
+  return findDateNearLabel(text, /\b(date\s*of\s*expir\w*|oate\s*of\s*expir\w*|expiry|valid until|exp)\b/i);
 }
 
 function extractIssueDate(text) {
@@ -241,11 +299,33 @@ function normalizeFrontPageText(text) {
   // These values reflect only what OCR can read on the printed page.
   // They are stored in front.visual_raw and used exclusively by
   // mrzIntegrity.js for the visual↔MRZ cross-checks.
-  // IMPORTANT: never overwrite these with MRZ-derived data — doing so would
-  // make the cross-check compare MRZ against itself (circular validation).
-  const rawVisualPassportNumber = extractPassportNumber(normalized) || null;
-  const rawVisualDob    = extractDateOfBirth(normalized) || null;
-  const rawVisualExpiry = extractExpiryDate(normalized) || null;
+  //
+  // STEP 1 — strip MRZ rows from the text before running visual extractors.
+  // Without this, the fallback pattern in extractPassportNumber matches the
+  // passport number that appears inside the MRZ line itself, making the
+  // cross-check circular: a tampered/obscured visual field still "passes"
+  // because the MRZ value contaminated the raw visual reading.
+  //
+  // A line is treated as MRZ when, after cleaning, it consists entirely of
+  // 28+ uppercase letters, digits, and filler ('<') — this character set and
+  // length never appears in printed label zones on an Indian passport.
+  const visualText = normalized
+    .split(/\r?\n/)
+    .filter((line) => {
+      const cl = cleanMrzLine(line.trim());
+      return cl.length < 28 || !/^[A-Z0-9<]{28,}$/.test(cl);
+    })
+    .join('\n');
+
+  // STEP 2 — run extractors on the MRZ-stripped visual text.
+  // If the labeled field is obscured, garbled, or out of frame, these return
+  // null. A null here correctly propagates as visual_passport_present=false
+  // into the scoring layer, which then applies the critical
+  // mrz_visual_passport_match penalty (the check is only skipped when
+  // BOTH the MRZ and visual sides are absent — asymmetry is suspicious).
+  const rawVisualPassportNumber = extractPassportNumber(visualText) || null;
+  const rawVisualDob    = extractDateOfBirth(visualText) || null;
+  const rawVisualExpiry = extractExpiryDate(visualText) || null;
 
   // ── MRZ-assisted output values ─────────────────────────────────────────────
   // For extracted_data we want the most accurate reading; MRZ wins when present.
@@ -334,7 +414,11 @@ async function detectTextFromImage(imageEncoded) {
 
   const text = result.fullTextAnnotation?.text || '';
 
-  return { text, raw: { text } };
+  return {
+    text,
+    raw: { text },
+    fullTextAnnotation: result.fullTextAnnotation || null
+  };
 }
 
 export async function extractPassportData(frontImageEncoded, backImageEncoded) {
@@ -365,8 +449,10 @@ export async function extractPassportData(frontImageEncoded, backImageEncoded) {
     address:         pick(backResult.address,           null),
     raw: {
       google_vision: {
-        front: frontResponse.raw.text,
-        back:  backResponse.raw.text
+        front: frontResponse.text,
+        back: backResponse.text,
+        front_meta: extractVisionTextMetrics(frontResponse.fullTextAnnotation),
+        back_meta: extractVisionTextMetrics(backResponse.fullTextAnnotation)
       }
     }
   };

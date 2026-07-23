@@ -15,6 +15,7 @@ import {
   runLlmFallback,
   buildFallbackTrace
 } from '../services/llmFallback.js';
+import { assessOcrImageQuality } from '../services/imageQuality.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -50,6 +51,7 @@ export async function cleanupTempFiles(filePaths) {
  * @param {Function} deps.shouldUseLlmFallbackFn   - LLM trigger predicate
  * @param {Function} deps.runLlmFallbackFn         - LLM extraction
  * @param {Function} deps.buildFallbackTraceFn      - Builds the diff trace
+ * @param {Function} deps.assessOcrImageQualityFn   - Post-OCR image quality gate
  *
  * @returns {Promise<object>} Structured validation result stored by BullMQ.
  */
@@ -60,7 +62,8 @@ export async function processPassportJob(job, {
   selectValidationResultFn = selectValidationResult,
   shouldUseLlmFallbackFn = shouldUseLlmFallback,
   runLlmFallbackFn       = runLlmFallback,
-  buildFallbackTraceFn   = buildFallbackTrace
+  buildFallbackTraceFn   = buildFallbackTrace,
+  assessOcrImageQualityFn = assessOcrImageQuality
 } = {}) {
   const { jobId, front, back } = job.data;
   const queueWaitMs = Math.max(0, (job.processedOn || Date.now()) - job.timestamp);
@@ -88,6 +91,40 @@ export async function processPassportJob(job, {
     }
   );
   const sdkExtractionMs = Date.now() - extractionStart;
+
+  const imageQuality = assessOcrImageQualityFn(ocrResult);
+  if (!imageQuality.acceptable) {
+    logger.info('Job rejected: OCR image quality insufficient', {
+      job_id: jobId,
+      front_issues: imageQuality.front.issues,
+      back_issues: imageQuality.back.issues
+    });
+
+    return {
+      job_id: jobId,
+      processing_metrics: {
+        queue_wait_ms: queueWaitMs,
+        sdk_extraction_ms: sdkExtractionMs,
+        internal_validation_ms: 0
+      },
+      verification_status: 'REUPLOAD_REQUIRED',
+      integrity_score: null,
+      integrity_tier: null,
+      review_required: false,
+      failed_checks: [],
+      integrity_flags: null,
+      extracted_data: null,
+      extracted_features: {
+        image_quality: imageQuality,
+        llm_fallback: { used: false, reason: 'skipped_due_to_image_quality', retryable: false }
+      },
+      image_quality: imageQuality,
+      user_message: imageQuality.user_message,
+      google_ocr_raw: ocrResult.raw,
+      llm_fallback: null,
+      fallback_trace: null
+    };
+  }
 
   const validationStart = Date.now();
   const validation = runValidationFn(ocrResult);

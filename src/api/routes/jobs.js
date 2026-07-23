@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { passportQueue } from '../../queue/passportQueue.js';
 import { logger } from '../../utils/logger.js';
+import { precheckPassportImages } from '../../utils/imagePrecheck.js';
 
 const MAX_FILE_SIZE_BYTES = 8 * 1024 * 1024;
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png']);
@@ -45,6 +46,24 @@ router.post(
         return res.status(400).json({
           status: 'error',
           message: 'front_image and back_image are required'
+        });
+      }
+
+      // ── Pre-queue image precheck ──────────────────────────────────────────
+      // Runs synchronously against the in-memory Multer buffers before any
+      // disk I/O or queue operations. Gives instant 422 feedback for images
+      // that are obviously unsuitable (too small, too low-res) so the user
+      // can retake and resubmit without burning a Vision API call.
+      const precheck = precheckPassportImages(front.buffer, back.buffer);
+      if (!precheck.pass) {
+        logger.info('Passport images rejected at precheck', {
+          front_issues: precheck.front.issues.map((i) => i.code),
+          back_issues:  precheck.back.issues.map((i) => i.code)
+        });
+        return res.status(422).json({
+          error: 'IMAGE_PRECHECK_FAILED',
+          issues: precheck.issues,
+          user_message: precheck.user_message
         });
       }
 

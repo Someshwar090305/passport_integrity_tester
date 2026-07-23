@@ -5,11 +5,13 @@ A Node.js service for validating Indian passport images by combining OCR, a laye
 ## What the Service Does
 
 - Accepts `front_image` and `back_image` via `POST /api/v1/jobs/verify-passport`
-- Writes uploaded images to a local temp directory (keeps Redis memory lean)
+- Runs a synchronous upload precheck before disk I/O or queueing (minimum 50 KB and 600×400 px for parseable JPEG/PNG images)
+- Writes accepted uploaded images to a local temp directory (keeps Redis memory lean)
 - Queues the job for background processing using BullMQ (3 retry attempts with exponential backoff)
 - Runs Google Cloud Vision OCR on both pages in parallel
   - Front page: extracts MRZ lines, passport number, DOB, expiry, date of issue, and place of issue
   - Back page: extracts file number, address, and barcode-adjacent passport number (no MRZ extraction — prevents false positives)
+- Runs an OCR quality gate after Vision extraction; incomplete front MRZ data or unreadable page anchors return `REUPLOAD_REQUIRED` without running validation or the LLM fallback
 - Runs a 5-layer deterministic integrity pipeline and computes a weighted score
 - Optionally invokes a Vertex AI (Gemini 2.5 Flash) LLM fallback when the first pass is weak, then re-validates with the corrected data
 - **Skips the LLM** when the only failure is an expired passport and all data fields were already successfully extracted — the LLM cannot un-expire a document
@@ -41,10 +43,12 @@ src/
   queue/
     passportQueue.js        — BullMQ queue + Redis connection
   services/
+    imageQuality.js         — Post-OCR quality gate and retake guidance
     validationEngine.js     — Orchestrates all validators, builds integrity flags
     integrityScoring.js     — Weighted scoring, tier assignment
     llmFallback.js          — Vertex AI fallback trigger, normalization, trace builder
   utils/
+    imagePrecheck.js        — Synchronous JPEG/PNG size and resolution checks
     helpers.js              — Shared utilities: pick, yyMmDdToIso, cleanMrzLine, normalizeDateString
     logger.js               — Structured JSON logger (respects LOG_LEVEL)
   validators/
@@ -203,6 +207,30 @@ curl -X POST http://localhost:3000/api/v1/jobs/verify-passport \
 }
 ```
 
+#### Upload precheck failure — `422 Unprocessable Entity`
+
+Before a job is created, each image is checked for a minimum file size of 50 KB and, when JPEG/PNG dimensions can be parsed, a minimum resolution of 600×400 pixels. A failed precheck does not call Google Vision and does not enqueue a BullMQ job.
+
+```json
+{
+  "error": "IMAGE_PRECHECK_FAILED",
+  "issues": [
+    {
+      "field": "front_image",
+      "code": "RESOLUTION_TOO_LOW",
+      "message": "front_image resolution is 480×320px, below the minimum 600×400px. Please retake the photo closer to the passport, ensuring the full page is clearly in frame.",
+      "details": {
+        "width_px": 480,
+        "height_px": 320,
+        "min_width_px": 600,
+        "min_height_px": 400
+      }
+    }
+  ],
+  "user_message": "The front image could not be accepted. ..."
+}
+```
+
 ---
 
 ### `GET /api/v1/jobs/:jobId`
@@ -305,6 +333,37 @@ Poll until the job finishes.
 }
 ```
 
+#### OCR quality rejection — `200 OK` with `verification_status: REUPLOAD_REQUIRED`
+
+After OCR, the worker checks whether both pages contain enough usable evidence to validate. If the front page is missing a complete numeric MRZ line 2, or the back page lacks readable anchors such as the file number, address, or PIN, validation and the LLM fallback are skipped. The completed job contains `integrity_score: null`, `integrity_flags: null`, `extracted_data: null`, an `image_quality` object, and a retake message.
+
+Example:
+
+```json
+{
+  "verification_status": "REUPLOAD_REQUIRED",
+  "review_required": false,
+  "integrity_score": null,
+  "integrity_tier": null,
+  "integrity_flags": null,
+  "extracted_data": null,
+  "image_quality": {
+    "acceptable": false,
+    "front": {
+      "acceptable": false,
+      "issues": ["FRONT_MRZ_UNREADABLE"]
+    },
+    "back": {
+      "acceptable": true,
+      "issues": []
+    },
+    "user_message": "Front image needs to be retaken. ..."
+  },
+  "user_message": "Front image needs to be retaken. ...",
+  "llm_fallback": null
+}
+```
+
 **Example with LLM fallback triggered**
 
 When the first pass fails or yields incomplete data, the response includes a `fallback_trace`:
@@ -337,7 +396,7 @@ When the first pass fails or yields incomplete data, the response includes a `fa
 
 ## Integrity Pipeline
 
-The validation engine runs five layers in sequence:
+Accepted OCR output runs through five validation layers. The complete processing path is: upload precheck → queue → Google Vision OCR → OCR quality gate → deterministic validation → optional LLM fallback and second validation pass.
 
 | Layer | Checks |
 |---|---|
@@ -406,7 +465,8 @@ The pipeline handles several real-world OCR failure modes automatically:
 | Failure | Detection | Recovery |
 |---|---|---|
 | OCR returns MRZ lines in swapped slots | Line 2 starts with `P<` and Line 1 does not — physically impossible for a correct pair | Lines are swapped before parsing |
-| OCR truncates MRZ Line 2 (< 42 chars) | Detected as a ≥ 28-char alphanumeric/`<` string immediately after a `P<` line | Accepted as Line 2; checksums still validated on available fields |
+| OCR truncates MRZ Line 2 (< 42 chars) | A 28–41 character candidate immediately after a `P<` line must still contain the expected numeric passport check position, 3-letter nationality, DOB, and expiry positions | Accepted as Line 2; checksums are validated on available fields |
+| OCR mistakes page-body text for MRZ Line 2 | Candidate fails the positional MRZ structure check or starts with `P<` | Rejected as Line 2; the OCR quality gate returns `REUPLOAD_REQUIRED` when no usable numeric line remains |
 | Garbled nationality field (`Y`, `1IN`, `<<<`) | Value does not match `/^[A-Z]{3}$/` | Treated as unreadable (not as a confirmed foreign nationality); no country penalty |
 
 ## Optional LLM Fallback
@@ -458,7 +518,7 @@ The script auto-detects `front`/`back` images inside each subfolder of `samples/
 npm test
 ```
 
-Current coverage (65 tests, all passing):
+Current coverage: 96 tests, all passing. The suite covers:
 
 - MRZ checksum and composite check digit computation
 - MRZ line 1 and line 2 parsing and integrity checks
@@ -474,6 +534,7 @@ Current coverage (65 tests, all passing):
 - LLM fallback normalization, MRZ line selection, JSON extraction, fallback trace builder
 - LLM skip when only failure is expired passport with complete data
 - Google Vision OCR normalization, MRZ extraction, and `visual_raw` split
+- JPEG/PNG image precheck (file size and resolution) and post-OCR image quality/reupload decisions
 - Job processor (BullMQ job lifecycle, LLM path, temp-file cleanup)
 
 ## Logging

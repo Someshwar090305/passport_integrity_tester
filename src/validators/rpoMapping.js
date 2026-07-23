@@ -68,6 +68,28 @@ const RPO_PREFIX_ALIAS_MAP = {
   // BOM is already in RPO_REGION_MAP, so no alias needed
 };
 
+const STATE_ABBREVIATIONS = {
+  TN: 'TAMIL NADU',
+  KA: 'KARNATAKA',
+  AP: 'ANDHRA PRADESH',
+  TS: 'TELANGANA',
+  KL: 'KERALA',
+  MH: 'MAHARASHTRA',
+  DL: 'DELHI',
+  GJ: 'GUJARAT',
+  OR: 'ODISHA',
+  PB: 'PUNJAB',
+  RJ: 'RAJASTHAN',
+  UP: 'UTTAR PRADESH',
+  WB: 'WEST BENGAL',
+  BR: 'BIHAR'
+};
+
+function normalizeStateName(raw) {
+  const state = String(raw || '').trim().toUpperCase();
+  return STATE_ABBREVIATIONS[state] || state;
+}
+
 export function extractRpoCode(fileNumber = '') {
   const normalized = String(fileNumber).toUpperCase().trim();
 
@@ -100,6 +122,7 @@ export function parseAddressBlock(addressText = '') {
   // Normalize key separators around PIN and commas to improve regex extraction.
   const normalized = compact
     .replace(/\bPIN\s*[:\-]?\s*(\d{6})\b/gi, ' PIN $1 ')
+    .replace(/\b(\d{3})\s(\d{3})\b/g, '$1$2')
     .replace(/\s*,\s*/g, ', ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -113,11 +136,14 @@ export function parseAddressBlock(addressText = '') {
     return {
       pin_code: pinCode,
       city: pinAnchored[1].trim().toUpperCase(),
-      state: pinAnchored[2].trim().toUpperCase()
+      state: normalizeStateName(pinAnchored[2].trim())
     };
   }
 
   const cityStatePatterns = [
+    /\b([A-Za-z .'-]+)\s*\d{6}\s*([A-Za-z]{2})\b/i,
+    /,\s*([A-Za-z .'-]+)\s*\d{6}\s*([A-Za-z]{2})\b/i,
+    /\b([A-Za-z .'-]+)\s*,\s*([A-Za-z .'-]+)\s*\d{6}\s*([A-Za-z]{2})\b/i,
     /,\s*([A-Za-z .'-]+)\s*,\s*([A-Za-z .'-]+)\s*(?:PIN\s*)?\d{6}\b/i,
     /\b([A-Za-z .'-]+)\s*,\s*([A-Za-z .'-]+)\s*(?:PIN\s*)?\d{6}\b/i,
     /,\s*([A-Za-z .'-]+)\s*(?:PIN\s*)?\d{6}\b/i
@@ -128,8 +154,13 @@ export function parseAddressBlock(addressText = '') {
   for (const pattern of cityStatePatterns) {
     const match = normalized.match(pattern);
     if (match) {
-      city = match[1].trim();
-      state = match[2] ? match[2].trim() : null;
+      if (match.length === 3) {
+        city = match[1].trim();
+        state = match[2].trim();
+      } else if (match.length === 4) {
+        city = match[1].trim();
+        state = match[3].trim();
+      }
       break;
     }
   }
@@ -143,7 +174,7 @@ export function parseAddressBlock(addressText = '') {
   return {
     pin_code: pinCode,
     city: city ? city.toUpperCase() : null,
-    state: state ? state.toUpperCase() : null
+    state: state ? normalizeStateName(state) : null
   };
 }
 
@@ -153,7 +184,7 @@ export function validateRpoAddressMapping(rpoCode, parsedAddress) {
   if (!allowed) return false;
 
   const city = String(parsedAddress.city || '').toUpperCase();
-  const state = String(parsedAddress.state || '').toUpperCase();
+  const state = normalizeStateName(String(parsedAddress.state || '').toUpperCase());
 
   return allowed.some((region) => city.includes(region) || state.includes(region));
 }

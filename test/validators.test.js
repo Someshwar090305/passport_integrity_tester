@@ -23,3 +23,14 @@ test('RPO parser and mapping validates known region', () => {
   assert.equal(parsed.pin_code, '600089');
   assert.equal(isValid, true);
 });
+
+test('parseAddressBlock handles OCR address with PIN and state abbreviation after city', () => {
+  const raw = 'w/Address, DOOR 9/12 FLAT F1, SHRI ANNAI FLATS, GANDHI NAGAR SIVAN KOIL SOUTH ST, KODAMBAKKAM, CHENNAI 600 024 TN, पुराने पासपोर्ट का में. और इसके जारी होने की तिथि एवं स्थान / Old Passport No. with Date and Place of Issue';
+  const parsed = parseAddressBlock(raw);
+  const isValid = validateRpoAddressMapping('MAA', parsed);
+
+  assert.equal(parsed.pin_code, '600024');
+  assert.equal(parsed.city, 'CHENNAI');
+  assert.equal(parsed.state, 'TAMIL NADU');
+  assert.equal(isValid, true);
+});
